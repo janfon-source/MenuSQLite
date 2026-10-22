@@ -8,7 +8,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                                 NSTextViewDelegate, NSOpenSavePanelDelegate {
     weak var popover: NSPopover?
 
-    private(set) var database: Database?
+    private(set) var database: DatabaseConnection?
     private var objects: [DatabaseObject] = []
     private var selected: DatabaseObject? { sidebar.selectedRow >= 0 ? objects[sidebar.selectedRow] : nil }
 
@@ -83,6 +83,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             toolButton("folder", "開啟資料庫（⌘O）", "Open Database (⌘O)", #selector(openDocument(_:))),
             toolButton("clock.arrow.circlepath", "最近開啟的資料庫", "Recent Databases", #selector(showRecentMenu(_:))),
             toolButton("plus.rectangle.on.folder", "新增資料庫（⌘N）", "New Database (⌘N)", #selector(newDocument(_:))),
+            toolButton("network", "透過 SSH 連線到伺服器上的資料庫（⇧⌘O）",
+                       "Open a Database on a Server over SSH (⇧⌘O)", #selector(connectRemote(_:))),
             divider(),
             toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
             toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
@@ -374,14 +376,14 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             show(try Database(url: url))
         } catch {
             showError(tr("無法開啟「\(url.lastPathComponent)」", "Couldn’t open “\(url.lastPathComponent)”"), error)
-            forgetRecent(url)
+            forgetRecent(url.path)
         }
     }
 
-    private func show(_ database: Database) {
+    private func show(_ database: DatabaseConnection) {
         _ = view   // reopening at launch comes before the window: the table list must exist
         self.database = database
-        addRecent(database.url)
+        addRecent(database.recentKey)
         sort = nil
         offset = 0
         reloadObjects()
@@ -394,10 +396,63 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         focus()
     }
 
-    /// Reopens the database used last, so the window comes back as it was left.
+    /// Reopens the database used last, so the window comes back as it was left. Not one on a
+    /// server: an unreachable one would hold up the launch.
     func reopenLast() {
-        guard let path = recent.first, FileManager.default.fileExists(atPath: path) else { return }
+        guard let path = recent.first, RemoteLocation(key: path) == nil, FileManager.default.fileExists(atPath: path) else { return }
         if let database = try? Database(url: URL(fileURLWithPath: path)) { show(database) }
+    }
+
+    // MARK: Databases on servers
+
+    /// Asks where the database is: the server, its SSH port and key, and the file's path there.
+    @objc func connectRemote(_ sender: Any?) {
+        let last = recent.lazy.compactMap(RemoteLocation.init(key:)).first
+        func field(_ value: String, _ placeholder: String) -> NSTextField {
+            let field = NSTextField(string: value)
+            field.placeholderString = placeholder
+            field.widthAnchor.constraint(equalToConstant: 300).isActive = true
+            return field
+        }
+        let host = field(last?.destination ?? "", tr("user@example.com 或 ~/.ssh/config 的 Host", "user@example.com, or a Host in ~/.ssh/config"))
+        let port = field(last?.port.map(String.init) ?? "", tr("22（選填）", "22 (optional)"))
+        let path = field(last?.path ?? "", tr("/var/data/app.sqlite 或 ~/app.db", "/var/data/app.sqlite or ~/app.db"))
+        let key = field(last?.identity ?? "", tr("~/.ssh/id_ed25519（選填）", "~/.ssh/id_ed25519 (optional)"))
+        let grid = NSGridView(views: [
+            [NSTextField(labelWithString: tr("主機", "Server")), host],
+            [NSTextField(labelWithString: tr("連接埠", "Port")), port],
+            [NSTextField(labelWithString: tr("資料庫路徑", "Database Path")), path],
+            [NSTextField(labelWithString: tr("私鑰", "Private Key")), key],
+        ])
+        grid.column(at: 0).xPlacement = .trailing
+        grid.rowAlignment = .firstBaseline
+        grid.frame.size = grid.fittingSize
+
+        let alert = NSAlert()
+        alert.messageText = tr("連線到伺服器上的 SQLite 資料庫", "Open an SQLite Database on a Server")
+        alert.informativeText = tr("透過 SSH 在伺服器上執行 sqlite3，直接讀寫那個檔案。用 SSH 金鑰或 ssh-agent 登入，伺服器需要裝有 sqlite3。",
+                                   "Runs sqlite3 on the server over SSH, working on the file where it is. Signs in with SSH keys or ssh-agent; the server needs sqlite3.")
+        alert.accessoryView = grid
+        alert.addButton(withTitle: tr("連線", "Connect"))
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        alert.window.initialFirstResponder = host.stringValue.isEmpty ? host : path
+        guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
+        let trimmed = { (field: NSTextField) in field.stringValue.trimmingCharacters(in: .whitespaces) }
+        guard !trimmed(host).isEmpty, !trimmed(path).isEmpty else { return NSSound.beep() }
+        open(RemoteLocation(destination: trimmed(host), port: Int(trimmed(port)), path: trimmed(path),
+                               identity: trimmed(key).isEmpty ? nil : trimmed(key)))
+    }
+
+    /// Opens a database on a server: from the form, or the recent list.
+    func open(_ location: RemoteLocation) {
+        titleLabel.stringValue = tr("正在連線到 \(location.destination)…", "Connecting to \(location.destination)…")
+        titleLabel.display()
+        do {
+            show(try RemoteDatabase(location))
+        } catch {
+            updateTitle()
+            showError(tr("無法連線到「\(location.destination)」上的資料庫", "Couldn’t open the database on “\(location.destination)”"), error)
+        }
     }
 
     private func updateTitle() {
@@ -406,8 +461,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             titleLabel.toolTip = nil
             return
         }
-        titleLabel.stringValue = database.url.lastPathComponent + (database.readOnly ? tr("（唯讀）", " (Read-Only)") : "")
-        titleLabel.toolTip = database.url.path
+        let server = (database as? RemoteDatabase).map { " — " + $0.remote.destination } ?? ""
+        titleLabel.stringValue = database.name + server + (database.readOnly ? tr("（唯讀）", " (Read-Only)") : "")
+        titleLabel.toolTip = database.location
     }
 
     // MARK: Recent databases
@@ -417,22 +473,26 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         set { UserDefaults.standard.set(Array(newValue.prefix(10)), forKey: Keys.recent) }
     }
 
-    private func addRecent(_ url: URL) {
-        recent = [url.path] + recent.filter { $0 != url.path }
+    /// Paths for files on this Mac, and RemoteLocation keys for ones on servers.
+    private func addRecent(_ key: String) {
+        recent = [key] + recent.filter { $0 != key }
     }
 
-    private func forgetRecent(_ url: URL) {
-        recent = recent.filter { $0 != url.path }
+    private func forgetRecent(_ key: String) {
+        recent = recent.filter { $0 != key }
     }
 
     @objc func showRecentMenu(_ sender: NSButton) {
         let menu = NSMenu()
-        for path in recent {
-            let item = NSMenuItem(title: (path as NSString).lastPathComponent, action: #selector(openRecent(_:)), keyEquivalent: "")
-            item.toolTip = path
-            item.representedObject = path
+        for key in recent {
+            let remote = RemoteLocation(key: key)
+            let file = ((remote?.path ?? key) as NSString).lastPathComponent
+            let item = NSMenuItem(title: remote.map { "\($0.destination)：\(file)" } ?? file,
+                                  action: #selector(openRecent(_:)), keyEquivalent: "")
+            item.toolTip = remote.map { "\($0.destination):\($0.path)" } ?? key
+            item.representedObject = key
             item.target = self
-            item.image = NSImage(systemSymbolName: "cylinder", accessibilityDescription: nil)
+            item.image = NSImage(systemSymbolName: remote == nil ? "cylinder" : "network", accessibilityDescription: nil)
             menu.addItem(item)
         }
         if recent.isEmpty {
@@ -449,8 +509,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc private func openRecent(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        open(URL(fileURLWithPath: path))
+        guard let key = sender.representedObject as? String else { return }
+        if let remote = RemoteLocation(key: key) { open(remote) } else { open(URL(fileURLWithPath: key)) }
     }
 
     @objc private func clearRecent(_ sender: Any?) {
@@ -902,6 +962,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let menu = NSMenu()
         add(menu, tr("開啟資料庫…", "Open Database…"), #selector(openDocument(_:)), key: "o")
         add(menu, tr("新增資料庫…", "New Database…"), #selector(newDocument(_:)), key: "n")
+        add(menu, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(connectRemote(_:)), key: "O")
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
         menu.addItem(.separator())
         add(menu, tr("恢復預設視窗大小", "Restore Default Window Size"), #selector(resetSize(_:)))

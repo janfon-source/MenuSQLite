@@ -12,6 +12,7 @@ enum MainMenu {
         let file = submenu(in: main, tr("檔案", "File"))
         add(file, tr("開啟資料庫…", "Open Database…"), #selector(MainViewController.openDocument(_:)), "o", target: controller)
         add(file, tr("新增資料庫…", "New Database…"), #selector(MainViewController.newDocument(_:)), "n", target: controller)
+        add(file, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(MainViewController.connectRemote(_:)), "O", target: controller)
         add(file, tr("重新整理", "Refresh"), #selector(MainViewController.refresh(_:)), "r", target: controller)
         add(file, tr("匯出 CSV…", "Export CSV…"), #selector(MainViewController.exportCSV(_:)), "E", target: controller)
         add(file, tr("關閉視窗", "Close Window"), #selector(MainViewController.closePopover(_:)), "w", target: controller)

@@ -20,6 +20,17 @@ enum Value: Equatable {
         }
     }
 
+    /// The value written as an SQL literal, for running SQL where values can't be bound.
+    var sqlLiteral: String {
+        switch self {
+        case .null: return "NULL"
+        case .integer(let n): return String(n)
+        case .real(let d): return d.isFinite ? String(d) : (d > 0 ? "9e999" : "-9e999")
+        case .text(let s): return "'" + s.replacingOccurrences(of: "'", with: "''") + "'"
+        case .blob(let data): return "X'" + data.map { String(format: "%02X", $0) }.joined() + "'"
+        }
+    }
+
     /// How CSV export writes it: NULL as an empty field, BLOBs as hex.
     var csv: String {
         switch self {
@@ -65,10 +76,114 @@ struct DatabaseError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-/// An open SQLite database file. A thin layer over the C API, free of UI so it can be tested alone.
-final class Database {
+/// An open database, on this Mac or on a server reached over SSH. Each kind only runs SQL;
+/// reading the schema and changing rows are built on that, the same for both.
+protocol DatabaseConnection: AnyObject {
+    /// The file's name, for the window title.
+    var name: String { get }
+    /// Where it is, in full: a path, or the server and path.
+    var location: String { get }
+    /// How the recent list remembers it, and opens it again.
+    var recentKey: String { get }
+    var readOnly: Bool { get }
+
+    /// Runs every statement in `sql` in turn. Returns the rows of the last statement that
+    /// returns any (a query after an update, say), and the rows all of them changed.
+    /// `bindings` fill the `?` placeholders, for a single statement.
+    @discardableResult
+    func run(_ sql: String, _ bindings: [Value]) throws -> ResultSet
+
+    /// Adds a row of default values; returns its rowid.
+    func insertRow(into table: String) throws -> Int64
+}
+
+extension DatabaseConnection {
+    @discardableResult
+    func run(_ sql: String) throws -> ResultSet { try run(sql, []) }
+
+    // MARK: Schema
+
+    /// Tables, then views, by name; SQLite's own tables left out.
+    func objects() throws -> [DatabaseObject] {
+        try run("""
+            SELECT type, name FROM sqlite_master
+            WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+            ORDER BY type = 'view', name COLLATE NOCASE
+            """).rows.compactMap { row in
+            guard case .text(let type) = row[0], case .text(let name) = row[1],
+                  let kind = DatabaseObject.Kind(rawValue: type) else { return nil }
+            return DatabaseObject(name: name, kind: kind)
+        }
+    }
+
+    func columns(of name: String) throws -> [Column] {
+        try run("PRAGMA table_info(\(Database.quote(name)))").rows.map { row in
+            Column(name: row[1].display, type: row[2] == .null ? "" : row[2].display,
+                   notNull: row[3] == .integer(1), defaultValue: row[4] == .null ? nil : row[4].display,
+                   primaryKey: { if case .integer(let n) = row[5] { return Int(n) }; return 0 }())
+        }
+    }
+
+    func indexes(of name: String) throws -> [Index] {
+        try run("PRAGMA index_list(\(Database.quote(name)))").rows.map { row in
+            let indexName = row[1].display
+            let columns = try run("PRAGMA index_info(\(Database.quote(indexName)))").rows.map { $0[2].display }
+            return Index(name: indexName, unique: row[2] == .integer(1), columns: columns)
+        }
+    }
+
+    /// The CREATE statement for a table, view, index or trigger.
+    func createStatement(of name: String) throws -> String? {
+        let rows = try run("SELECT sql FROM sqlite_master WHERE name = ?", [.text(name)]).rows
+        guard case .text(let sql)? = rows.first?.first else { return nil }
+        return sql
+    }
+
+    /// Whether rows can be told apart by rowid: true for ordinary tables, false for views
+    /// and WITHOUT ROWID tables.
+    func hasRowID(_ object: DatabaseObject) -> Bool {
+        object.kind == .table && (try? run("SELECT rowid FROM \(Database.quote(object.name)) LIMIT 0")) != nil
+    }
+
+    func rowCount(of name: String) throws -> Int {
+        guard case .integer(let n)? = try run("SELECT count(*) FROM \(Database.quote(name))").rows.first?.first else { return 0 }
+        return Int(n)
+    }
+
+    // MARK: Rows
+
+    /// A page of a table's rows. With `rowIDs`, each row's rowid comes first, for editing.
+    /// An empty page still has the table's columns.
+    func rows(of object: DatabaseObject, orderBy column: String?, ascending: Bool,
+              limit: Int, offset: Int, rowIDs: Bool) throws -> ResultSet {
+        let select = rowIDs ? "rowid, *" : "*"
+        let order = column.map { " ORDER BY \(Database.quote($0)) \(ascending ? "ASC" : "DESC")" } ?? ""
+        var page = try run("SELECT \(select) FROM \(Database.quote(object.name))\(order) LIMIT ? OFFSET ?",
+                           [.integer(Int64(limit)), .integer(Int64(offset))])
+        if page.columns.isEmpty {   // over SSH, an empty result says nothing of its columns
+            page.columns = (rowIDs ? ["rowid"] : []) + (try columns(of: object.name)).map(\.name)
+        }
+        return page
+    }
+
+    func update(_ table: String, column: String, to value: Value, rowID: Int64) throws {
+        try run("UPDATE \(Database.quote(table)) SET \(Database.quote(column)) = ? WHERE rowid = ?", [value, .integer(rowID)])
+    }
+
+    func deleteRows(from table: String, rowIDs: [Int64]) throws {
+        guard !rowIDs.isEmpty else { return }
+        let marks = Array(repeating: "?", count: rowIDs.count).joined(separator: ", ")
+        try run("DELETE FROM \(Database.quote(table)) WHERE rowid IN (\(marks))", rowIDs.map(Value.integer))
+    }
+}
+
+/// An open SQLite database file on this Mac, through the C API. Free of UI so it can be tested alone.
+final class Database: DatabaseConnection {
     let url: URL
     private(set) var readOnly = false
+    var name: String { url.lastPathComponent }
+    var location: String { url.path }
+    var recentKey: String { url.path }
     private var handle: OpaquePointer?
 
     /// SQLite copies bound text and blobs right away, so the Swift buffers can go.
@@ -116,11 +231,8 @@ final class Database {
 
     // MARK: - Running SQL
 
-    /// Runs every statement in `sql` in turn. Returns the rows of the last statement that
-    /// returns any (a query after an update, say), and the rows all of them changed.
-    /// `bindings` fill the `?` placeholders, for a single statement.
     @discardableResult
-    func run(_ sql: String, _ bindings: [Value] = []) throws -> ResultSet {
+    func run(_ sql: String, _ bindings: [Value]) throws -> ResultSet {
         var result = ResultSet()
         let changesBefore = sqlite3_total_changes(handle)
         try sql.withCString { start in
@@ -184,79 +296,10 @@ final class Database {
         }
     }
 
-    // MARK: - Schema
-
-    /// Tables, then views, by name; SQLite's own tables left out.
-    func objects() throws -> [DatabaseObject] {
-        try run("""
-            SELECT type, name FROM sqlite_master
-            WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-            ORDER BY type = 'view', name COLLATE NOCASE
-            """).rows.compactMap { row in
-            guard case .text(let type) = row[0], case .text(let name) = row[1],
-                  let kind = DatabaseObject.Kind(rawValue: type) else { return nil }
-            return DatabaseObject(name: name, kind: kind)
-        }
-    }
-
-    func columns(of name: String) throws -> [Column] {
-        try run("PRAGMA table_info(\(Self.quote(name)))").rows.map { row in
-            Column(name: row[1].display, type: row[2] == .null ? "" : row[2].display,
-                   notNull: row[3] == .integer(1), defaultValue: row[4] == .null ? nil : row[4].display,
-                   primaryKey: { if case .integer(let n) = row[5] { return Int(n) }; return 0 }())
-        }
-    }
-
-    func indexes(of name: String) throws -> [Index] {
-        try run("PRAGMA index_list(\(Self.quote(name)))").rows.map { row in
-            let indexName = row[1].display
-            let columns = try run("PRAGMA index_info(\(Self.quote(indexName)))").rows.map { $0[2].display }
-            return Index(name: indexName, unique: row[2] == .integer(1), columns: columns)
-        }
-    }
-
-    /// The CREATE statement for a table, view, index or trigger.
-    func createStatement(of name: String) throws -> String? {
-        let rows = try run("SELECT sql FROM sqlite_master WHERE name = ?", [.text(name)]).rows
-        guard case .text(let sql)? = rows.first?.first else { return nil }
-        return sql
-    }
-
-    /// Whether rows can be told apart by rowid: true for ordinary tables, false for views
-    /// and WITHOUT ROWID tables.
-    func hasRowID(_ object: DatabaseObject) -> Bool {
-        object.kind == .table && (try? run("SELECT rowid FROM \(Self.quote(object.name)) LIMIT 0")) != nil
-    }
-
-    func rowCount(of name: String) throws -> Int {
-        guard case .integer(let n)? = try run("SELECT count(*) FROM \(Self.quote(name))").rows.first?.first else { return 0 }
-        return Int(n)
-    }
-
-    // MARK: - Rows
-
-    /// A page of a table's rows. With `rowIDs`, each row's rowid comes first, for editing.
-    func rows(of object: DatabaseObject, orderBy column: String?, ascending: Bool,
-              limit: Int, offset: Int, rowIDs: Bool) throws -> ResultSet {
-        let select = rowIDs ? "rowid, *" : "*"
-        let order = column.map { " ORDER BY \(Self.quote($0)) \(ascending ? "ASC" : "DESC")" } ?? ""
-        return try run("SELECT \(select) FROM \(Self.quote(object.name))\(order) LIMIT ? OFFSET ?",
-                       [.integer(Int64(limit)), .integer(Int64(offset))])
-    }
-
-    func update(_ table: String, column: String, to value: Value, rowID: Int64) throws {
-        try run("UPDATE \(Self.quote(table)) SET \(Self.quote(column)) = ? WHERE rowid = ?", [value, .integer(rowID)])
-    }
-
     /// Adds a row of default values; returns its rowid.
     func insertRow(into table: String) throws -> Int64 {
         try run("INSERT INTO \(Self.quote(table)) DEFAULT VALUES")
         return sqlite3_last_insert_rowid(handle)
     }
 
-    func deleteRows(from table: String, rowIDs: [Int64]) throws {
-        guard !rowIDs.isEmpty else { return }
-        let marks = Array(repeating: "?", count: rowIDs.count).joined(separator: ", ")
-        try run("DELETE FROM \(Self.quote(table)) WHERE rowid IN (\(marks))", rowIDs.map(Value.integer))
-    }
 }
