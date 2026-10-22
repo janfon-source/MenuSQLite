@@ -171,14 +171,15 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         // Right-click a table, or use the buttons under the list, to add, change or delete tables.
         let menu = NSMenu()
         for (zh, en, action) in [("新增資料表…", "New Table…", #selector(newTable(_:))),
-                                 ("編輯資料表…", "Edit Table…", #selector(editTable(_:))),
+                                 ("新增視圖…", "New View…", #selector(newView(_:))),
+                                 ("編輯…", "Edit…", #selector(editTable(_:))),
                                  ("刪除…", "Delete…", #selector(deleteTable(_:)))] {
             let item = menu.addItem(withTitle: tr(zh, en), action: action, keyEquivalent: "")
             item.target = self
         }
         sidebar.menu = menu
-        newTableButton = smallButton("plus", "新增資料表（⌥⌘N）", "New Table (⌥⌘N)", #selector(newTable(_:)))
-        editTableButton = smallButton("pencil", "編輯資料表（⌥⌘E）", "Edit Table (⌥⌘E)", #selector(editTable(_:)))
+        newTableButton = smallButton("plus", "新增資料表或視圖", "New Table or View", #selector(showNewMenu(_:)))
+        editTableButton = smallButton("pencil", "編輯資料表或視圖（⌥⌘E）", "Edit Table or View (⌥⌘E)", #selector(editTable(_:)))
         deleteTableButton = smallButton("trash", "刪除資料表", "Delete Table", #selector(deleteTable(_:)))
         let bar = NSStackView(views: [newTableButton, editTableButton, deleteTableButton, NSView()])
         bar.spacing = 2
@@ -527,7 +528,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     private func updateTableButtons() {
         newTableButton?.isEnabled = canChangeSchema
-        editTableButton?.isEnabled = canChangeSchema && selected?.kind == .table
+        editTableButton?.isEnabled = canChangeSchema && selected != nil
         deleteTableButton?.isEnabled = canChangeSchema && selected != nil
     }
 
@@ -609,8 +610,33 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         changeSchema(sql, thenSelect: editor.tableName)
     }
 
+    @objc private func showNewMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        add(menu, tr("新增資料表…", "New Table…"), #selector(newTable(_:)))
+        add(menu, tr("新增視圖…", "New View…"), #selector(newView(_:)))
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc func newView(_ sender: Any?) {
+        guard canChangeSchema, let database else { return NSSound.beep() }
+        editView(nil, in: database)
+    }
+
+    private func editView(_ name: String?, in database: DatabaseConnection) {
+        let editor: ViewEditor
+        do {
+            editor = try ViewEditor(database: database, original: name)
+        } catch {
+            return showError(tr("無法讀取視圖的定義", "Couldn’t read the view’s definition"), error)
+        }
+        guard keepingPopoverOpen({ editor.run() }), let sql = editor.sql else { return }
+        changeSchema(sql, thenSelect: editor.viewName)
+    }
+
+    /// Edits the table or view: columns for a table, the SELECT for a view.
     @objc func editTable(_ sender: Any?) {
-        guard canChangeSchema, let database, let object = actedOn, object.kind == .table else { return NSSound.beep() }
+        guard canChangeSchema, let database, let object = actedOn else { return NSSound.beep() }
+        if object.kind == .view { return editView(object.name, in: database) }
         let snapshot: TableSnapshot
         do {
             snapshot = try TableDesign.snapshot(of: object.name, in: database)
@@ -1043,7 +1069,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
         menu.addItem(.separator())
         add(menu, tr("新增資料表…", "New Table…"), #selector(newTable(_:)), key: "n").keyEquivalentModifierMask = [.command, .option]
-        add(menu, tr("編輯資料表…", "Edit Table…"), #selector(editTable(_:)), key: "e").keyEquivalentModifierMask = [.command, .option]
+        add(menu, tr("新增視圖…", "New View…"), #selector(newView(_:)), key: "N").keyEquivalentModifierMask = [.command, .option, .shift]
+        add(menu, tr("編輯資料表或視圖…", "Edit Table or View…"), #selector(editTable(_:)), key: "e").keyEquivalentModifierMask = [.command, .option]
         menu.addItem(.separator())
         add(menu, tr("恢復預設視窗大小", "Restore Default Window Size"), #selector(resetSize(_:)))
         let themes = NSMenu()
@@ -1119,10 +1146,10 @@ extension MainViewController: NSMenuItemValidation {
             return selected != nil
         case #selector(addRow(_:)):
             return dataGrid.editable && tab == .data
-        case #selector(newTable(_:)):
+        case #selector(newTable(_:)), #selector(newView(_:)):
             return canChangeSchema
         case #selector(editTable(_:)):
-            return canChangeSchema && actedOn?.kind == .table
+            return canChangeSchema && actedOn != nil
         case #selector(deleteTable(_:)):
             return canChangeSchema && actedOn != nil
         default:

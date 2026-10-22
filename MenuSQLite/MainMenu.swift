@@ -17,7 +17,9 @@ enum MainMenu {
         file.addItem(.separator())
         add(file, tr("新增資料表…", "New Table…"), #selector(MainViewController.newTable(_:)), "n", target: controller)
             .keyEquivalentModifierMask = [.command, .option]
-        add(file, tr("編輯資料表…", "Edit Table…"), #selector(MainViewController.editTable(_:)), "e", target: controller)
+        add(file, tr("新增視圖…", "New View…"), #selector(MainViewController.newView(_:)), "N", target: controller)
+            .keyEquivalentModifierMask = [.command, .option, .shift]
+        add(file, tr("編輯資料表或視圖…", "Edit Table or View…"), #selector(MainViewController.editTable(_:)), "e", target: controller)
             .keyEquivalentModifierMask = [.command, .option]
         add(file, tr("匯出 CSV…", "Export CSV…"), #selector(MainViewController.exportCSV(_:)), "E", target: controller)
         add(file, tr("關閉視窗", "Close Window"), #selector(MainViewController.closePopover(_:)), "w", target: controller)
