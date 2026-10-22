@@ -406,41 +406,21 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     // MARK: Databases on servers
 
     /// Asks where the database is: the server, its SSH port and key, and the file's path there.
+    /// The server can be picked from ~/.ssh/config, which fills in the rest.
     @objc func connectRemote(_ sender: Any?) {
-        let last = recent.lazy.compactMap(RemoteLocation.init(key:)).first
-        func field(_ value: String, _ placeholder: String) -> NSTextField {
-            let field = NSTextField(string: value)
-            field.placeholderString = placeholder
-            field.widthAnchor.constraint(equalToConstant: 300).isActive = true
-            return field
-        }
-        let host = field(last?.destination ?? "", tr("user@example.com 或 ~/.ssh/config 的 Host", "user@example.com, or a Host in ~/.ssh/config"))
-        let port = field(last?.port.map(String.init) ?? "", tr("22（選填）", "22 (optional)"))
-        let path = field(last?.path ?? "", tr("/var/data/app.sqlite 或 ~/app.db", "/var/data/app.sqlite or ~/app.db"))
-        let key = field(last?.identity ?? "", tr("~/.ssh/id_ed25519（選填）", "~/.ssh/id_ed25519 (optional)"))
-        let grid = NSGridView(views: [
-            [NSTextField(labelWithString: tr("主機", "Server")), host],
-            [NSTextField(labelWithString: tr("連接埠", "Port")), port],
-            [NSTextField(labelWithString: tr("資料庫路徑", "Database Path")), path],
-            [NSTextField(labelWithString: tr("私鑰", "Private Key")), key],
-        ])
-        grid.column(at: 0).xPlacement = .trailing
-        grid.rowAlignment = .firstBaseline
-        grid.frame.size = grid.fittingSize
-
+        let remotes = recent.compactMap(RemoteLocation.init(key:))
+        let form = RemoteForm(start: remotes.first) { alias in remotes.first { $0.destination == alias }?.path }
         let alert = NSAlert()
         alert.messageText = tr("連線到伺服器上的 SQLite 資料庫", "Open an SQLite Database on a Server")
         alert.informativeText = tr("透過 SSH 在伺服器上執行 sqlite3，直接讀寫那個檔案。用 SSH 金鑰或 ssh-agent 登入，伺服器需要裝有 sqlite3。",
                                    "Runs sqlite3 on the server over SSH, working on the file where it is. Signs in with SSH keys or ssh-agent; the server needs sqlite3.")
-        alert.accessoryView = grid
+        alert.accessoryView = form.view
         alert.addButton(withTitle: tr("連線", "Connect"))
         alert.addButton(withTitle: tr("取消", "Cancel"))
-        alert.window.initialFirstResponder = host.stringValue.isEmpty ? host : path
+        alert.window.initialFirstResponder = form.firstField
         guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
-        let trimmed = { (field: NSTextField) in field.stringValue.trimmingCharacters(in: .whitespaces) }
-        guard !trimmed(host).isEmpty, !trimmed(path).isEmpty else { return NSSound.beep() }
-        open(RemoteLocation(destination: trimmed(host), port: Int(trimmed(port)), path: trimmed(path),
-                               identity: trimmed(key).isEmpty ? nil : trimmed(key)))
+        guard let location = form.location else { return NSSound.beep() }
+        open(location)
     }
 
     /// Opens a database on a server: from the form, or the recent list.
