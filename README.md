@@ -37,6 +37,32 @@ A lightweight SQLite manager that lives in the macOS menu bar. [English below](#
 
 只想編譯不安裝就執行 `./build.sh`，結果在 `build/隨手庫.app`。
 
+## 連線到伺服器的需求
+
+透過 SSH 開啟伺服器上的資料庫時，需要：
+
+- 用 **SSH 金鑰或 ssh-agent** 登入伺服器（隨手庫不會詢問密碼）。
+- 伺服器上裝有 **`sqlite3` 指令**。
+
+隨手庫連線時會自動檢查，沒有 `sqlite3` 會直接提示。也可以在終端機手動確認：
+
+```sh
+ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
+```
+
+有安裝會印出路徑和版本（例如 `/usr/bin/sqlite3`、`3.45.1 …`），沒有安裝則什麼都不會印。主機名稱可以用 `~/.ssh/config` 裡的 Host。
+
+沒有安裝時，依伺服器的系統安裝（需要 sudo 權限）：
+
+| 系統 | 安裝指令 |
+|---|---|
+| Ubuntu / Debian | `sudo apt install sqlite3` |
+| RHEL / CentOS / Rocky / Alma | `sudo dnf install sqlite`（舊版用 `yum`） |
+| Alpine | `sudo apk add sqlite` |
+| macOS | 內建，不用安裝 |
+
+隨手庫使用 `sqlite3` 的 quote 輸出模式取得資料，很舊的版本可能不支援；連線後出現錯誤時，請先更新伺服器上的 `sqlite3`。
+
 ---
 
 ## English
@@ -62,6 +88,32 @@ Requires macOS 13 or later and Xcode or the Command Line Tools (`xcode-select --
 ```
 
 Run `./build.sh` alone to build into `build/隨手庫.app` without installing.
+
+### Requirements for databases on servers
+
+Opening a database on a server over SSH needs:
+
+- Sign-in with **SSH keys or ssh-agent** (MenuSQLite never asks for a password).
+- The **`sqlite3` command** on the server.
+
+MenuSQLite checks when it connects and says so if `sqlite3` is missing. To check by hand:
+
+```sh
+ssh server 'command -v sqlite3 && sqlite3 -version'
+```
+
+If it's installed, this prints its path and version (such as `/usr/bin/sqlite3` and `3.45.1 …`); if not, nothing. The server can be a Host from `~/.ssh/config`.
+
+To install it (with sudo):
+
+| System | Command |
+|---|---|
+| Ubuntu / Debian | `sudo apt install sqlite3` |
+| RHEL / CentOS / Rocky / Alma | `sudo dnf install sqlite` (`yum` on older releases) |
+| Alpine | `sudo apk add sqlite` |
+| macOS | Built in |
+
+MenuSQLite reads results through `sqlite3`'s quote output mode, which very old versions may lack; if connecting gives an error, update `sqlite3` on the server first.
 
 ## License
 
