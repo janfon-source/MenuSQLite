@@ -65,27 +65,57 @@ final class RemoteDatabase: DatabaseConnection {
     /// and that the server has sqlite3.
     init(_ remote: RemoteLocation) throws {
         self.remote = remote
-        let path = Self.shellQuote(remote.path)
+        // Each answer is a line: what was found, then details. "Missing" is told apart from a
+        // folder this account can't get into, which hides what's in it just the same.
         let check = """
+            p=\(Self.shellQuote(remote.path))
+            echo "WHO $(whoami)@$(hostname)"
             command -v sqlite3 >/dev/null 2>&1 || { echo NOSQLITE; exit 0; }
-            [ -f \(path) ] || { echo MISSING; exit 0; }
-            [ -r \(path) ] || { echo UNREADABLE; exit 0; }
-            [ -w \(path) ] && echo WRITABLE || echo READONLY
+            d=$(dirname "$p")
+            if [ ! -e "$p" ]; then
+              while [ "$d" != / ] && [ ! -d "$d" ]; do d=$(dirname "$d"); done
+              if [ -x "$d" ] && [ -r "$d" ]; then
+                echo MISSING
+                ls -1 "$d" 2>/dev/null | grep -iE '[.](sqlite3?|sqllite|db3?|s3db)$' | head -8 | sed 's/^/FILE /'
+              else
+                echo "NOACCESS $d"
+              fi
+              exit 0
+            fi
+            [ -f "$p" ] || { echo NOTFILE; exit 0; }
+            [ -r "$p" ] || { echo UNREADABLE; exit 0; }
+            # Changing a database also needs its folder, for the journal SQLite writes beside it.
+            if [ -w "$p" ] && [ -w "$d" ]; then echo WRITABLE; else echo READONLY; fi
             """
-        let reply = try ssh(command: "sh -s", input: check).trimmingCharacters(in: .whitespacesAndNewlines)
-        switch reply {
-        case "NOSQLITE":
-            throw DatabaseError(message: tr("伺服器上沒有 sqlite3 指令，請先安裝（例如 apt install sqlite3）。",
-                                            "The server has no sqlite3 command. Install it first (apt install sqlite3, for example)."))
-        case "MISSING":
-            throw DatabaseError(message: tr("伺服器上找不到「\(remote.path)」。", "“\(remote.path)” isn’t on the server."))
-        case "UNREADABLE":
-            throw DatabaseError(message: tr("沒有讀取「\(remote.path)」的權限。", "No permission to read “\(remote.path)”."))
-        case "READONLY":
-            readOnly = true
-        default:
-            break
+        let lines = try ssh(command: "sh -s", input: check).split(separator: "\n").map(String.init)
+        func field(_ name: String) -> String? {
+            lines.first { $0 == name || $0.hasPrefix(name + " ") }.map { String($0.dropFirst(name.count)).trimmingCharacters(in: .whitespaces) }
         }
+        let who = field("WHO") ?? remote.destination
+        let path = remote.path
+        if field("NOSQLITE") != nil {
+            throw DatabaseError(message: tr("\(who) 上沒有 sqlite3 指令，請先安裝（例如 apt install sqlite3）。",
+                                            "\(who) has no sqlite3 command. Install it first (apt install sqlite3, for example)."))
+        }
+        if field("MISSING") != nil {
+            let nearby = lines.filter { $0.hasPrefix("FILE ") }.map { String($0.dropFirst(5)) }
+            var message = tr("在 \(who) 上找不到「\(path)」。", "“\(path)” isn’t on \(who).")
+            if !nearby.isEmpty {
+                message += "\n" + tr("同一個資料夾裡的資料庫檔案：", "Database files in the same folder: ") + nearby.joined(separator: tr("、", ", "))
+            }
+            throw DatabaseError(message: message)
+        }
+        if let folder = field("NOACCESS") {
+            throw DatabaseError(message: tr("以 \(who) 登入，沒有權限進入「\(folder)」資料夾，所以看不到裡面的檔案。請讓這個帳號可以讀取並進入該資料夾（r 和 x 權限），或改用有權限的帳號連線。",
+                                            "Signed in as \(who), which can’t get into “\(folder)”, so the files in it can’t be seen. Give this account read and search (r and x) permission on that folder, or connect as an account that has it."))
+        }
+        if field("NOTFILE") != nil {
+            throw DatabaseError(message: tr("「\(path)」不是檔案。", "“\(path)” isn’t a file."))
+        }
+        if field("UNREADABLE") != nil {
+            throw DatabaseError(message: tr("以 \(who) 登入，沒有讀取「\(path)」的權限。", "Signed in as \(who), which can’t read “\(path)”."))
+        }
+        readOnly = field("READONLY") != nil
         _ = try run("SELECT count(*) FROM sqlite_master")   // a file that isn't a database fails here
     }
 
