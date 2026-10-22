@@ -1182,11 +1182,17 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         NSApp.activate(ignoringOtherApps: true)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
-        let credits = NSAttributedString(string: "Created by : Jeff Lee", attributes: [
-            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let credits = NSMutableAttributedString(string: "Created by : Jeff Lee\n", attributes: [
+            .font: font,
             .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: paragraph,
         ])
+        credits.append(NSAttributedString(string: "github.com/janfon-source/MenuSQLite", attributes: [
+            .font: font,
+            .link: URL(string: "https://github.com/janfon-source/MenuSQLite")!,
+            .paragraphStyle: paragraph,
+        ]))
         NSApp.orderFrontStandardAboutPanel(options: [.applicationName: tr("隨手庫", "MenuSQLite"), .credits: credits])
     }
 }
