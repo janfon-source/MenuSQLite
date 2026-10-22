@@ -379,7 +379,7 @@ final class RemoteDatabase: DatabaseConnection {
             !$0.hasPrefix("Warning: Permanently added") && !$0.trimmingCharacters(in: .whitespaces).isEmpty
         }
         guard var message = lines.first else { return tr("SSH 連線失敗（代碼 \(status)）。", "The SSH connection failed (code \(status)).") }
-        if let range = message.range(of: #"^(Parse|Runtime) error near line \d+: |^Error: (near line \d+: )?"#, options: .regularExpression) {
+        if let range = message.range(of: #"^((Parse|Runtime) error|Error):? (near line \d+: )?"#, options: .regularExpression) {
             message.removeSubrange(range)
         }
         if message.contains("Permission denied") {

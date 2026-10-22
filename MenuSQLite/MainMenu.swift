@@ -14,6 +14,11 @@ enum MainMenu {
         add(file, tr("新增資料庫…", "New Database…"), #selector(MainViewController.newDocument(_:)), "n", target: controller)
         add(file, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(MainViewController.connectRemote(_:)), "O", target: controller)
         add(file, tr("重新整理", "Refresh"), #selector(MainViewController.refresh(_:)), "r", target: controller)
+        file.addItem(.separator())
+        add(file, tr("新增資料表…", "New Table…"), #selector(MainViewController.newTable(_:)), "n", target: controller)
+            .keyEquivalentModifierMask = [.command, .option]
+        add(file, tr("編輯資料表…", "Edit Table…"), #selector(MainViewController.editTable(_:)), "e", target: controller)
+            .keyEquivalentModifierMask = [.command, .option]
         add(file, tr("匯出 CSV…", "Export CSV…"), #selector(MainViewController.exportCSV(_:)), "E", target: controller)
         add(file, tr("關閉視窗", "Close Window"), #selector(MainViewController.closePopover(_:)), "w", target: controller)
 

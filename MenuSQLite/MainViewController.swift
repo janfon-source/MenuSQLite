@@ -55,6 +55,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var previousButton: NSButton!
     private var nextButton: NSButton!
     private var pageDivider: NSView!
+    private var newTableButton: NSButton!
+    private var editTableButton: NSButton!
+    private var deleteTableButton: NSButton!
     private var runButton: NSButton!
     private var localized: [(view: NSView, zh: String, en: String)] = []
     private var escapeMonitor: Any?
@@ -164,7 +167,30 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
-        return scroll
+
+        // Right-click a table, or use the buttons under the list, to add, change or delete tables.
+        let menu = NSMenu()
+        for (zh, en, action) in [("新增資料表…", "New Table…", #selector(newTable(_:))),
+                                 ("編輯資料表…", "Edit Table…", #selector(editTable(_:))),
+                                 ("刪除…", "Delete…", #selector(deleteTable(_:)))] {
+            let item = menu.addItem(withTitle: tr(zh, en), action: action, keyEquivalent: "")
+            item.target = self
+        }
+        sidebar.menu = menu
+        newTableButton = smallButton("plus", "新增資料表（⌥⌘N）", "New Table (⌥⌘N)", #selector(newTable(_:)))
+        editTableButton = smallButton("pencil", "編輯資料表（⌥⌘E）", "Edit Table (⌥⌘E)", #selector(editTable(_:)))
+        deleteTableButton = smallButton("trash", "刪除資料表", "Delete Table", #selector(deleteTable(_:)))
+        let bar = NSStackView(views: [newTableButton, editTableButton, deleteTableButton, NSView()])
+        bar.spacing = 2
+        bar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        let pane = NSStackView(views: [scroll, bar])
+        pane.orientation = .vertical
+        pane.distribution = .fill
+        pane.spacing = 0
+        pane.setHuggingPriority(.init(1), for: .vertical)
+        bar.setHuggingPriority(.required, for: .vertical)
+        scroll.widthAnchor.constraint(equalTo: pane.widthAnchor).isActive = true
+        return pane
     }
 
     private func makeDetail() -> NSView {
@@ -499,8 +525,15 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: - Tables
 
+    private func updateTableButtons() {
+        newTableButton?.isEnabled = canChangeSchema
+        editTableButton?.isEnabled = canChangeSchema && selected?.kind == .table
+        deleteTableButton?.isEnabled = canChangeSchema && selected != nil
+    }
+
     /// Reads the list of tables and views again, keeping the selection where it still exists.
     private func reloadObjects() {
+        defer { updateTableButtons() }
         let previous = selected
         objects = (try? database?.objects()) ?? []
         sidebar.reloadData()
@@ -551,11 +584,75 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func selectionChanged() {
+        updateTableButtons()
         sort = nil
         offset = 0
         loadPage()
         loadStructure()
         showTab()
+    }
+
+    // MARK: - Designing tables
+
+    /// The table a right-click was on, or else the one selected.
+    private var actedOn: DatabaseObject? {
+        let row = sidebar.clickedRow >= 0 ? sidebar.clickedRow : sidebar.selectedRow
+        return objects.indices.contains(row) ? objects[row] : nil
+    }
+
+    private var canChangeSchema: Bool { database.map { !$0.readOnly } ?? false }
+
+    @objc func newTable(_ sender: Any?) {
+        guard canChangeSchema else { return NSSound.beep() }
+        let editor = TableEditor(snapshot: nil)
+        guard keepingPopoverOpen({ editor.run() }), let sql = editor.sql else { return }
+        changeSchema(sql, thenSelect: editor.tableName)
+    }
+
+    @objc func editTable(_ sender: Any?) {
+        guard canChangeSchema, let database, let object = actedOn, object.kind == .table else { return NSSound.beep() }
+        let snapshot: TableSnapshot
+        do {
+            snapshot = try TableDesign.snapshot(of: object.name, in: database)
+        } catch {
+            return showError(tr("無法讀取資料表結構", "Couldn’t read the table’s structure"), error)
+        }
+        let editor = TableEditor(snapshot: snapshot)
+        guard keepingPopoverOpen({ editor.run() }), let sql = editor.sql else { return }
+        changeSchema(sql, thenSelect: editor.tableName)
+    }
+
+    @objc func deleteTable(_ sender: Any?) {
+        guard canChangeSchema, let database, let object = actedOn else { return NSSound.beep() }
+        let alert = NSAlert()
+        alert.messageText = object.kind == .table ? tr("要刪除資料表「\(object.name)」嗎？", "Delete the table “\(object.name)”?")
+                                                  : tr("要刪除視圖「\(object.name)」嗎？", "Delete the view “\(object.name)”?")
+        alert.informativeText = object.kind == .table ? tr("資料表和其中的資料都會刪除，無法復原。", "The table and all its rows will be deleted. This can’t be undone.")
+                                                      : tr("只刪除視圖，不影響資料。", "Only the view goes; no data is deleted.")
+        alert.addButton(withTitle: tr("刪除", "Delete")).hasDestructiveAction = true
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
+        do {
+            try database.run("DROP \(object.kind == .table ? "TABLE" : "VIEW") \(Database.quote(object.name))")
+            reloadObjects()
+        } catch {
+            showError(tr("無法刪除", "Couldn’t delete"), error)
+        }
+    }
+
+    private func changeSchema(_ sql: String, thenSelect name: String) {
+        guard let database else { return }
+        do {
+            try TableDesign.apply(sql, to: database)
+        } catch {
+            showError(tr("無法變更資料表", "Couldn’t change the table"), error)
+        }
+        reloadObjects()
+        if let row = objects.firstIndex(where: { $0.name == name }) {
+            sidebar.selectRowIndexes([row], byExtendingSelection: false)
+            sidebar.scrollRowToVisible(row)
+        }
+        refresh(nil)
     }
 
     // MARK: - Data tab
@@ -945,6 +1042,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         add(menu, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(connectRemote(_:)), key: "O")
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
         menu.addItem(.separator())
+        add(menu, tr("新增資料表…", "New Table…"), #selector(newTable(_:)), key: "n").keyEquivalentModifierMask = [.command, .option]
+        add(menu, tr("編輯資料表…", "Edit Table…"), #selector(editTable(_:)), key: "e").keyEquivalentModifierMask = [.command, .option]
+        menu.addItem(.separator())
         add(menu, tr("恢復預設視窗大小", "Restore Default Window Size"), #selector(resetSize(_:)))
         let themes = NSMenu()
         for theme in Theme.allCases {
@@ -1019,6 +1119,12 @@ extension MainViewController: NSMenuItemValidation {
             return selected != nil
         case #selector(addRow(_:)):
             return dataGrid.editable && tab == .data
+        case #selector(newTable(_:)):
+            return canChangeSchema
+        case #selector(editTable(_:)):
+            return canChangeSchema && actedOn?.kind == .table
+        case #selector(deleteTable(_:)):
+            return canChangeSchema && actedOn != nil
         default:
             return true
         }
