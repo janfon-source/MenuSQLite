@@ -61,7 +61,9 @@ ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
 | Alpine | `sudo apk add sqlite` |
 | macOS | 內建，不用安裝 |
 
-隨手庫使用 `sqlite3` 的 quote 輸出模式取得資料，很舊的版本可能不支援；連線後出現錯誤時，請先更新伺服器上的 `sqlite3`。
+舊版的 `sqlite3`（例如 CentOS 7 內建的 3.7.17）也可以使用：隨手庫會自動偵測，改用 CSV 格式取得資料。這時以文字存放的數字會顯示成數字（只影響對齊），BLOB 欄位無法正確顯示。
+
+**權限**：隨手庫用 SSH 登入的帳號讀寫檔案。要修改資料，這個帳號需要檔案和所在資料夾的寫入權限（SQLite 修改時會在同一個資料夾建立暫存檔），否則會以唯讀開啟。找不到檔案或沒有權限進入資料夾時，錯誤訊息會註明登入的帳號和主機，以及同一個資料夾裡的資料庫檔案。
 
 ---
 
@@ -113,7 +115,9 @@ To install it (with sudo):
 | Alpine | `sudo apk add sqlite` |
 | macOS | Built in |
 
-MenuSQLite reads results through `sqlite3`'s quote output mode, which very old versions may lack; if connecting gives an error, update `sqlite3` on the server first.
+Old `sqlite3` versions (such as 3.7.17 on CentOS 7) work too: MenuSQLite notices and reads CSV output instead. Numbers stored as text then show as numbers (only their alignment differs), and BLOB columns can't be shown properly.
+
+**Permissions**: MenuSQLite reads and writes as the SSH account. Changing data needs write permission on the file and its folder (SQLite writes a journal beside it); otherwise the database opens read-only. When a file can't be found or a folder can't be entered, the error names the account and server, and lists the database files in the folder.
 
 ## License
 

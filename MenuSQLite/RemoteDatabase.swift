@@ -52,6 +52,12 @@ struct RemoteLocation: Equatable {
 final class RemoteDatabase: DatabaseConnection {
     let remote: RemoteLocation
     private(set) var readOnly = false
+    /// sqlite3 older than quote mode (CentOS 7 has 3.7.17) prints CSV instead, which loses some
+    /// types: quoted values read as text and bare numbers as numbers, and BLOBs come out as
+    /// their raw bytes.
+    private(set) var csvOutput = false
+    /// Old sqlite3 has no -readonly option either.
+    private var hasReadOnlyOption = true
 
     var name: String { (remote.path as NSString).lastPathComponent }
     var location: String { "\(remote.destination):\(remote.path)" }
@@ -59,6 +65,8 @@ final class RemoteDatabase: DatabaseConnection {
 
     /// The ssh program; tests point it at a stand-in that runs the command locally.
     static var sshPath = "/usr/bin/ssh"
+    /// For tests: read output as old sqlite3 would print it, even from a newer one.
+    static var forceCSVOutput = false
     static let timeout: TimeInterval = 30
 
     /// Connects and checks the file: that it's there and readable, whether it's writable,
@@ -71,6 +79,8 @@ final class RemoteDatabase: DatabaseConnection {
             p=\(Self.shellQuote(remote.path))
             echo "WHO $(whoami)@$(hostname)"
             command -v sqlite3 >/dev/null 2>&1 || { echo NOSQLITE; exit 0; }
+            printf '.mode quote\\n' | sqlite3 :memory: 2>&1 | grep -q Error && echo NOQUOTE
+            sqlite3 -help 2>&1 | grep -q -- -readonly || echo NOREADONLY
             d=$(dirname "$p")
             if [ ! -e "$p" ]; then
               while [ "$d" != / ] && [ ! -d "$d" ]; do d=$(dirname "$d"); done
@@ -116,12 +126,16 @@ final class RemoteDatabase: DatabaseConnection {
             throw DatabaseError(message: tr("以 \(who) 登入，沒有讀取「\(path)」的權限。", "Signed in as \(who), which can’t read “\(path)”."))
         }
         readOnly = field("READONLY") != nil
+        csvOutput = field("NOQUOTE") != nil || Self.forceCSVOutput
+        hasReadOnlyOption = field("NOREADONLY") == nil
         _ = try run("SELECT count(*) FROM sqlite_master")   // a file that isn't a database fails here
     }
 
     // MARK: Running SQL
 
     private static let marker = "@@MENUSQLITE@@"
+    /// What CSV output prints for NULL, which an empty string can't be told from otherwise.
+    private static let nullMarker = "@@MENUSQLITE-NULL@@"
 
     @discardableResult
     func run(_ sql: String, _ bindings: [Value]) throws -> ResultSet {
@@ -136,16 +150,17 @@ final class RemoteDatabase: DatabaseConnection {
     /// can be told apart, then asks how many rows changed and the last inserted rowid.
     private func execute(_ sql: String, _ bindings: [Value]) throws -> (result: ResultSet, lastRowID: Int64) {
         let statements = Self.statements(in: bindings.isEmpty ? sql : Self.inline(bindings, into: sql))
-        var script = ".bail on\n.headers on\n.mode quote\n"
+        var script = ".bail on\n.headers on\n" + (csvOutput ? ".mode csv\n.nullvalue \(Self.nullMarker)\n" : ".mode quote\n")
         for statement in statements {
             script += ".print \(Self.marker)\n" + statement + (statement.hasSuffix(";") ? "" : ";") + "\n"
         }
         script += ".print \(Self.marker)\nSELECT total_changes(), last_insert_rowid();\n"
-        let command = "sqlite3 -batch\(readOnly ? " -readonly" : "") \(Self.shellQuote(remote.path))"
+        let command = "sqlite3 -batch\(readOnly && hasReadOnlyOption ? " -readonly" : "") \(Self.shellQuote(remote.path))"
         let output = try ssh(command: command, input: script)
 
         // What came before the first marker isn't ours; then one section per statement, and the counts.
-        let sections = output.components(separatedBy: Self.marker + "\n").dropFirst().map { Self.parse($0) }
+        let sections = output.components(separatedBy: Self.marker + "\n").dropFirst()
+            .map { csvOutput ? Self.parseCSV($0) : Self.parse($0) }
         var result = ResultSet()
         for section in sections.dropLast() where !section.isEmpty {
             result.columns = section[0].map(\.display)
@@ -238,6 +253,45 @@ final class RemoteDatabase: DatabaseConnection {
             }
         }
         if !row.isEmpty { rows.append(row) }
+        return rows
+    }
+
+    /// Rows as old sqlite3's `.mode csv` prints them, NULL as `nullMarker`. A quoted field is
+    /// text; a bare one is a number if it reads as one, and text otherwise.
+    static func parseCSV(_ text: String) -> [[Value]] {
+        var rows: [[Value]] = [], row: [Value] = [], field = "", quoted = false, inQuotes = false, started = false
+        func endField() {
+            if quoted { row.append(.text(field)) }
+            else if field == nullMarker { row.append(.null) }
+            else if let n = Int64(field) { row.append(.integer(n)) }
+            else if let d = Double(field), field.contains(where: { ".eE".contains($0) }) { row.append(.real(d)) }
+            else { row.append(.text(field)) }
+            field = ""; quoted = false; started = false
+        }
+        var chars = text.makeIterator()
+        var pending: Character? = nil
+        while let c = pending ?? chars.next() {
+            pending = nil
+            if inQuotes {
+                if c == "\"" {
+                    if let next = chars.next() {
+                        if next == "\"" { field.append("\"") } else { inQuotes = false; pending = next }
+                    } else { inQuotes = false }
+                } else {
+                    field.append(c)
+                }
+            } else if c == "\"" && !started {
+                inQuotes = true; quoted = true; started = true
+            } else if c == "," {
+                endField()
+            } else if c == "\n" || c == "\r\n" {
+                if started || !row.isEmpty || !field.isEmpty { endField(); rows.append(row) }
+                row = []
+            } else if c != "\r" {
+                field.append(c); started = true
+            }
+        }
+        if started || !row.isEmpty { endField(); rows.append(row) }
         return rows
     }
 
