@@ -7,6 +7,11 @@ import UniformTypeIdentifiers
 final class MainViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
                                 NSTextViewDelegate, NSOpenSavePanelDelegate {
     weak var popover: NSPopover?
+    /// The window the content moves to while pinned, which can be dragged anywhere.
+    weak var pinnedWindow: NSWindow?
+    /// Called when the pin is switched on or off, to move the content between popover and window.
+    var onPinChange: ((Bool) -> Void)?
+    private var inPinnedWindow: Bool { pinnedWindow != nil && view.window === pinnedWindow }
 
     private(set) var database: DatabaseConnection?
     private var objects: [DatabaseObject] = []
@@ -63,11 +68,12 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var escapeMonitor: Any?
     private var sizeAtDragStart = NSSize.zero
 
-    private var pinned = UserDefaults.standard.bool(forKey: Keys.pinned) {
+    private(set) var pinned = UserDefaults.standard.bool(forKey: Keys.pinned) {
         didSet {
             UserDefaults.standard.set(pinned, forKey: Keys.pinned)
             applyPopoverBehavior()
             updatePinButton()
+            onPinChange?(pinned)
         }
     }
 
@@ -78,8 +84,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         titleLabel.lineBreakMode = .byTruncatingMiddle
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        pinButton = toolButton("pin", "釘選：點其他地方時不關閉視窗（按 Esc 仍可隱藏）",
-                               "Pin: keep the window open when clicking elsewhere (Esc still hides it)", #selector(togglePin(_:)))
+        pinButton = toolButton("pin", "釘選：視窗固定顯示，可拖曳上緣或空白處移動（按 Esc 仍可隱藏）；解除後回到選單列下方原本的大小",
+                               "Pin: keep the window open and drag it anywhere by its top edge (Esc still hides it); unpinning puts it back under the menu bar at its earlier size",
+                               #selector(togglePin(_:)))
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let toolbar = NSStackView(views: [
@@ -297,8 +304,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         grip.onDrag = { [weak self] delta in
             guard let self else { return }
             // The popover stays centered under the menu bar icon, so its right edge moves half as
-            // far as the width changes; doubling keeps the corner under the pointer.
-            self.resize(to: NSSize(width: self.sizeAtDragStart.width + delta.width * 2,
+            // far as the width changes; doubling keeps the corner under the pointer. The pinned
+            // window keeps its left edge, so there the corner follows the pointer as it is.
+            let factor: CGFloat = self.inPinnedWindow ? 1 : 2
+            self.resize(to: NSSize(width: self.sizeAtDragStart.width + delta.width * factor,
                                    height: self.sizeAtDragStart.height + delta.height))
         }
         grip.onReset = { [weak self] in self?.resetSize(nil) }
@@ -1024,6 +1033,17 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     private func resize(to size: NSSize) {
         let size = clamp(size)
+        // The pinned window has a size of its own (saved with its place); the popover's size is
+        // left as it was, for when the pin comes off.
+        if inPinnedWindow, let window = view.window {
+            var frame = window.frame
+            let top = frame.maxY
+            frame.size = window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
+            frame.origin.y = top - frame.height
+            preferredContentSize = size
+            window.setFrame(frame, display: true)
+            return
+        }
         preferredContentSize = size
         popover?.contentSize = size
         savedSize = size
@@ -1032,6 +1052,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     @objc func resetSize(_ sender: Any?) {
         resize(to: Self.defaultSize)
+    }
+
+    /// Back in the popover after being pinned: the size it had before.
+    func restorePopoverSize() {
+        resize(to: savedSize)
     }
 
     func applyPopoverBehavior() {
@@ -1048,7 +1073,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         pinned.toggle()
     }
 
+    /// Hides the window; a pinned one stays pinned, and comes back where it was.
     @objc func closePopover(_ sender: Any?) {
+        if inPinnedWindow { return view.window!.orderOut(sender) }
         popover?.performClose(sender)
     }
 

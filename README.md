@@ -18,7 +18,8 @@ A lightweight SQLite manager that lives in the macOS menu bar. [English below](#
 - **結構文件（Markdown）**：工具列的文件按鈕或 ⇧⌘D，把目前資料庫所有資料表和視圖的結構整理成一份 Markdown：欄位（類型、非空、唯一、預設值、主鍵）、外鍵、索引、觸發程序、資料列數和建立語句，表格已對齊，純文字也好讀。文件在獨立視窗以排版後的 Markdown 顯示（與隨手記的預覽相同）；切到「Markdown」可看原始碼並修改，再「另存新檔…」（⌘S）、「列印…」（⌘P，依紙張寬度重新排版，一律以淺色列印，也可在列印對話框存成 PDF）或「用預設 App 開啟」（例如隨手記）；「重新產生」依資料庫最新狀態重做。
 - **匯出 CSV**：SQL 分頁匯出查詢結果，其他分頁匯出整個資料表。UTF-8 含 BOM，Excel 開啟中文不會亂碼。
 - **拷貝**：選取資料列按 ⌘C，以 Tab 分隔拷貝，可直接貼到試算表。
-- **繁體中文 / English 介面**、淺色／深色主題、釘選視窗、登入時自動開啟。
+- **釘選視窗**：按圖釘後，視窗變成可自由拖曳（拖上緣或空白處）、可調整大小的浮動視窗，切換到其他 App 也不會收起，下次顯示仍在原處；再按一次解除釘選，視窗回到選單列圖示下方、釘選前的大小。
+- **繁體中文 / English 介面**、淺色／深色主題、登入時自動開啟。
 
 | 快捷鍵 | 功能 |
 |---|---|
@@ -90,7 +91,8 @@ ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
 - **Structure document (Markdown)**: the document button in the toolbar, or ⇧⌘D, writes the structure of every table and view as one Markdown document: columns (type, not null, unique, default, primary key), foreign keys, indexes, triggers, row counts and CREATE statements, with tables lined up so the plain text reads well too. It opens in its own window rendered as Markdown (as 隨手記 previews it); switch to Markdown to see and edit the source, then Save As… (⌘S), Print… (⌘P; laid out again for the paper, always in light colors, and the print dialog can save a PDF) or Open in Default App; Regenerate makes it again from the database as it is now.
 - **Export CSV**: the query's results on the SQL tab, the whole table otherwise. UTF-8 with a BOM, so Excel reads Chinese correctly.
 - **Copy** selected rows with ⌘C as tab-separated text, ready to paste into a spreadsheet.
-- **Traditional Chinese / English UI**, light or dark theme, pinning, and an option to open at login.
+- **Pinning**: the pin turns the window into a floating one you can drag anywhere (by its top edge or any empty space) and resize; it stays up while you use other apps and comes back where you left it. Unpin and it returns under the menu bar icon at the size it had before.
+- **Traditional Chinese / English UI**, light or dark theme, and an option to open at login.
 
 ### Install
 
