@@ -1003,6 +1003,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         window.onClose = { [weak self, weak window] in self?.schemaWindows.removeAll { $0 === window } }
         schemaWindows.append(window)
+        // The popover floats above ordinary windows, pinned or not, and would cover the document.
+        closePopover(nil)
         window.present()
     }
 
