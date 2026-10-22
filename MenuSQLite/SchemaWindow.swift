@@ -21,6 +21,8 @@ final class SchemaWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private var renderedText: String?
     private var renderedWidth: CGFloat = 0
     private static let fontSize: CGFloat = 13
+    /// Paper reads smaller type than a screen, and narrower pages need the room for tables.
+    private static let printFontSize: CGFloat = 11
     var onClose: (() -> Void)?
 
     /// `regenerate` makes the document again from the database, for the Regenerate button.
@@ -73,6 +75,9 @@ final class SchemaWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         mode.action = #selector(modeChanged(_:))
         let refresh = NSButton(title: tr("重新產生", "Regenerate"), target: self, action: #selector(refresh(_:)))
         let openButton = NSButton(title: tr("用預設 App 開啟", "Open in Default App"), target: self, action: #selector(openInApp(_:)))
+        let printButton = NSButton(title: tr("列印…", "Print…"), target: self, action: #selector(printDocument(_:)))
+        printButton.keyEquivalent = "p"
+        printButton.keyEquivalentModifierMask = .command
         let save = NSButton(title: tr("另存新檔…", "Save As…"), target: self, action: #selector(saveAs(_:)))
         save.keyEquivalent = "s"
         save.keyEquivalentModifierMask = .command
@@ -82,7 +87,7 @@ final class SchemaWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let bar = NSStackView(views: [mode, refresh, status, spacer, openButton, save])
+        let bar = NSStackView(views: [mode, refresh, status, spacer, openButton, printButton, save])
         bar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 10, right: 12)
 
         let stack = NSStackView(views: [previewScroll, sourceScroll, bar])
@@ -232,6 +237,48 @@ final class SchemaWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
                 NSAlert(error: error).beginSheetModal(for: window)
             }
         }
+    }
+
+    // MARK: Printing
+
+    @objc private func printDocument(_ sender: Any?) {
+        printOperation().runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
+    /// Prints the document as the preview shows it, laid out again for the paper's width so the
+    /// tables fit, and in light colors whatever the window's appearance.
+    func printOperation(printInfo: NSPrintInfo = NSPrintInfo.shared) -> NSPrintOperation {
+        let info = printInfo.copy() as! NSPrintInfo
+        info.horizontalPagination = .fit
+        info.verticalPagination = .automatic
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+        for margin in [\NSPrintInfo.leftMargin, \.rightMargin, \.topMargin, \.bottomMargin] { info[keyPath: margin] = 40 }
+        let width = info.paperSize.width - info.leftMargin - info.rightMargin
+
+        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 100))
+        view.textContainer?.replaceLayoutManager(PreviewLayoutManager())
+        view.appearance = NSAppearance(named: .aqua)
+        view.textContainerInset = .zero
+        view.drawsBackground = false
+        view.isVerticallyResizable = true
+        view.textContainer?.widthTracksTextView = true
+        let padding = view.textContainer?.lineFragmentPadding ?? 0
+        NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance {
+            view.textStorage?.setAttributedString(MarkdownRenderer.render(
+                sourceView.string, fontSize: Self.printFontSize, baseURL: nil, width: width - padding * 2))
+        }
+        if let layout = view.layoutManager, let container = view.textContainer {
+            layout.ensureLayout(for: container)
+            view.frame.size.height = ceil(layout.usedRect(for: container).height)
+        }
+
+        let operation = NSPrintOperation(view: view, printInfo: info)
+        operation.jobTitle = (fileName as NSString).deletingPathExtension
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        operation.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview])
+        return operation
     }
 
     /// Opens the saved file, or a copy of the text in a temporary folder if it isn't saved as it is.

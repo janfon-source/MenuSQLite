@@ -15,7 +15,7 @@ A lightweight SQLite manager that lives in the macOS menu bar. [English below](#
 - **新增與編輯視圖**：＋ 按鈕選「新增視圖…」，或在視圖上按右鍵／鉛筆按鈕編輯。輸入名稱、選填的欄位名稱和 SELECT 語句，按「預覽結果」（⌘↩）先看前 50 列。儲存前會先執行一次 SELECT，有錯（例如資料表或欄位不存在）就顯示錯誤、不會存檔。SQLite 沒有 ALTER VIEW，編輯時在交易中刪除舊視圖再建立新的；視圖上的觸發程序會因此刪除，會事先提醒。
 - **結構**：欄位（類型、非空、預設值、主鍵）、索引、資料列數，以及有語法上色的 CREATE 語句。
 - **執行 SQL**：語法上色的編輯器，⌘↩ 執行；有選取文字時只執行選取的部分，可一次執行多個語句。顯示結果、影響列數、耗時或錯誤訊息。
-- **結構文件（Markdown）**：工具列的文件按鈕或 ⇧⌘D，把目前資料庫所有資料表和視圖的結構整理成一份 Markdown：欄位（類型、非空、唯一、預設值、主鍵）、外鍵、索引、觸發程序、資料列數和建立語句，表格已對齊，純文字也好讀。文件在獨立視窗以排版後的 Markdown 顯示（與隨手記的預覽相同）；切到「Markdown」可看原始碼並修改，再「另存新檔…」（⌘S）或「用預設 App 開啟」（例如隨手記）；「重新產生」依資料庫最新狀態重做。
+- **結構文件（Markdown）**：工具列的文件按鈕或 ⇧⌘D，把目前資料庫所有資料表和視圖的結構整理成一份 Markdown：欄位（類型、非空、唯一、預設值、主鍵）、外鍵、索引、觸發程序、資料列數和建立語句，表格已對齊，純文字也好讀。文件在獨立視窗以排版後的 Markdown 顯示（與隨手記的預覽相同）；切到「Markdown」可看原始碼並修改，再「另存新檔…」（⌘S）、「列印…」（⌘P，依紙張寬度重新排版，一律以淺色列印，也可在列印對話框存成 PDF）或「用預設 App 開啟」（例如隨手記）；「重新產生」依資料庫最新狀態重做。
 - **匯出 CSV**：SQL 分頁匯出查詢結果，其他分頁匯出整個資料表。UTF-8 含 BOM，Excel 開啟中文不會亂碼。
 - **拷貝**：選取資料列按 ⌘C，以 Tab 分隔拷貝，可直接貼到試算表。
 - **繁體中文 / English 介面**、淺色／深色主題、釘選視窗、登入時自動開啟。
@@ -87,7 +87,7 @@ ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
 - **Create and edit views**: choose New View… from the ＋ button, or right-click a view (or use the pencil) to edit it. Enter a name, optional column names and the SELECT, and click Preview (⌘↩) to see its first 50 rows. Saving runs the SELECT first and refuses with the error if it fails (a missing table or column, say). SQLite has no ALTER VIEW, so an edit drops the view and creates it again in a transaction; triggers on the view are deleted, and you're told beforehand.
 - **Structure**: columns (type, not null, default, primary key), indexes, row count and the syntax-colored CREATE statement.
 - **Run SQL** in a syntax-colored editor with ⌘↩; with text selected, only the selection runs, and several statements can run at once. Shows the results, rows changed, time taken or the error.
-- **Structure document (Markdown)**: the document button in the toolbar, or ⇧⌘D, writes the structure of every table and view as one Markdown document: columns (type, not null, unique, default, primary key), foreign keys, indexes, triggers, row counts and CREATE statements, with tables lined up so the plain text reads well too. It opens in its own window rendered as Markdown (as 隨手記 previews it); switch to Markdown to see and edit the source, then Save As… (⌘S) or Open in Default App; Regenerate makes it again from the database as it is now.
+- **Structure document (Markdown)**: the document button in the toolbar, or ⇧⌘D, writes the structure of every table and view as one Markdown document: columns (type, not null, unique, default, primary key), foreign keys, indexes, triggers, row counts and CREATE statements, with tables lined up so the plain text reads well too. It opens in its own window rendered as Markdown (as 隨手記 previews it); switch to Markdown to see and edit the source, then Save As… (⌘S), Print… (⌘P; laid out again for the paper, always in light colors, and the print dialog can save a PDF) or Open in Default App; Regenerate makes it again from the database as it is now.
 - **Export CSV**: the query's results on the SQL tab, the whole table otherwise. UTF-8 with a BOM, so Excel reads Chinese correctly.
 - **Copy** selected rows with ⌘C as tab-separated text, ready to paste into a spreadsheet.
 - **Traditional Chinese / English UI**, light or dark theme, pinning, and an option to open at login.
