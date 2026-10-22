@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover.contentViewController = nil
         panel.contentView = main.view
         main.preferredContentSize = panel.contentRect(forFrameRect: frame).size
+        holdPreferredSize(false)
         panel.setFrame(frame, display: false)
         main.pinnedWindow = panel
         if rect != nil { showPanel() }
@@ -107,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let wasShowing = panel?.isVisible ?? false
         panel?.orderOut(nil)
         panel?.contentView = NSView()
+        holdPreferredSize(true)
         main.pinnedWindow = nil
         popover.contentViewController = main
         main.restorePopoverSize()
@@ -145,6 +147,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         panel.setFrameAutosaveName(Self.panelFrameName)
         return panel
+    }
+
+    /// The popover holds the view to the controller's preferred size with constraints just above
+    /// the priority at which a window keeps its size, and a window held like that can't be resized
+    /// by its edges. While pinned they're set just below it, so the window decides the size.
+    private func holdPreferredSize(_ hold: Bool) {
+        for constraint in main.view.constraints where constraint.identifier?.hasPrefix("NSViewController.preferredContentSize") == true {
+            constraint.priority = hold ? .init(501) : .init(499)
+        }
     }
 
     /// The popover left a constraint holding the view to the controller's preferred size, which
