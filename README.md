@@ -37,9 +37,25 @@ A lightweight SQLite manager that lives in the macOS menu bar. [English below](#
 
 ## 安裝
 
-需要 macOS 13 以上，以及 Xcode 或 Command Line Tools（`xcode-select --install`）。
+需要 macOS 13 以上，Intel 和 Apple 晶片的 Mac 都可以。
+
+### 直接下載
+
+在「終端機」貼上這一行，會下載最新版、安裝到「應用程式」並打開：
 
 ```sh
+curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/MenuSQLite.zip -o /tmp/MenuSQLite.zip && ditto -x -k /tmp/MenuSQLite.zip /Applications && open /Applications/隨手庫.app
+```
+
+也可以到 [Releases](https://github.com/janfon-source/MenuSQLite/releases/latest) 下載壓縮檔，解壓縮後把「隨手庫」拖到「應用程式」。隨手庫沒有經過 Apple 公證，用瀏覽器下載的版本第一次打開會被擋下：先打開一次，出現警告後按「完成」，再到「系統設定」→「隱私權與安全性」，在下方按「強制打開」。用上面的終端機指令安裝則不會被擋。
+
+### 從原始碼編譯
+
+需要 Xcode 或 Command Line Tools（`xcode-select --install`）。
+
+```sh
+git clone https://github.com/janfon-source/MenuSQLite.git
+cd MenuSQLite
 ./build.sh install   # 編譯並安裝到 /Applications/隨手庫.app
 ```
 
@@ -96,9 +112,25 @@ ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
 
 ### Install
 
-Requires macOS 13 or later and Xcode or the Command Line Tools (`xcode-select --install`).
+Requires macOS 13 or later, on Intel or Apple silicon.
+
+#### Download
+
+Paste this into Terminal to download the latest version, install it in Applications and open it:
 
 ```sh
+curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/MenuSQLite.zip -o /tmp/MenuSQLite.zip && ditto -x -k /tmp/MenuSQLite.zip /Applications && open /Applications/隨手庫.app
+```
+
+Or download the zip from [Releases](https://github.com/janfon-source/MenuSQLite/releases/latest), unzip it and move 隨手庫 to Applications. The app isn't notarized, so a browser download is blocked the first time: try to open it, click Done at the warning, then click Open Anyway in System Settings → Privacy & Security. The Terminal command above avoids this.
+
+#### Build from source
+
+Requires Xcode or the Command Line Tools (`xcode-select --install`).
+
+```sh
+git clone https://github.com/janfon-source/MenuSQLite.git
+cd MenuSQLite
 ./build.sh install   # builds and installs /Applications/隨手庫.app
 ```
 
