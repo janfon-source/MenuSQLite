@@ -22,6 +22,7 @@ enum MainMenu {
         add(file, tr("編輯資料表或視圖…", "Edit Table or View…"), #selector(MainViewController.editTable(_:)), "e", target: controller)
             .keyEquivalentModifierMask = [.command, .option]
         add(file, tr("匯出 CSV…", "Export CSV…"), #selector(MainViewController.exportCSV(_:)), "E", target: controller)
+        add(file, tr("結構文件（Markdown）…", "Structure Document (Markdown)…"), #selector(MainViewController.showSchemaDocument(_:)), "D", target: controller)
         add(file, tr("關閉視窗", "Close Window"), #selector(MainViewController.closePopover(_:)), "w", target: controller)
 
         let edit = submenu(in: main, tr("編輯", "Edit"))

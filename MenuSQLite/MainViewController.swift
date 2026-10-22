@@ -91,6 +91,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             divider(),
             toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
             toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
+            toolButton("doc.richtext", "結構文件：所有資料表和視圖的結構（Markdown，⇧⌘D）",
+                       "Structure Document: every table and view, as Markdown (⇧⌘D)", #selector(showSchemaDocument(_:))),
             spacer,
             pinButton,
             toolButton("ellipsis.circle", "更多", "More", #selector(showMoreMenu(_:))),
@@ -982,6 +984,28 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
+    // MARK: - Structure document
+
+    private var schemaWindows: [SchemaWindow] = []
+
+    /// Writes the structure of every table and view as Markdown and shows it in its own window.
+    @objc func showSchemaDocument(_ sender: Any?) {
+        guard let database else { return NSSound.beep() }
+        let markdown: String
+        do {
+            markdown = try SchemaDocument.markdown(for: database)
+        } catch {
+            return showError(tr("無法製作結構文件", "Couldn’t make the structure document"), error)
+        }
+        let window = SchemaWindow(databaseName: database.name, markdown: markdown) { [weak database] in
+            guard let database else { throw DatabaseError(message: tr("資料庫已關閉。", "The database is closed.")) }
+            return try SchemaDocument.markdown(for: database)
+        }
+        window.onClose = { [weak self, weak window] in self?.schemaWindows.removeAll { $0 === window } }
+        schemaWindows.append(window)
+        window.present()
+    }
+
     // MARK: - Popover
 
     private var savedSize: NSSize {
@@ -1067,6 +1091,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         add(menu, tr("新增資料庫…", "New Database…"), #selector(newDocument(_:)), key: "n")
         add(menu, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(connectRemote(_:)), key: "O")
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
+        add(menu, tr("結構文件（Markdown）…", "Structure Document (Markdown)…"), #selector(showSchemaDocument(_:)), key: "D")
         menu.addItem(.separator())
         add(menu, tr("新增資料表…", "New Table…"), #selector(newTable(_:)), key: "n").keyEquivalentModifierMask = [.command, .option]
         add(menu, tr("新增視圖…", "New View…"), #selector(newView(_:)), key: "N").keyEquivalentModifierMask = [.command, .option, .shift]
@@ -1140,7 +1165,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)):
+        case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)):
             return database != nil
         case #selector(showDataTab(_:)), #selector(showStructureTab(_:)):
             return selected != nil
