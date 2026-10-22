@@ -7,6 +7,7 @@ A lightweight SQLite manager that lives in the macOS menu bar. [English below](#
 ## 功能
 
 - **開啟與建立**：開啟任何 SQLite 資料庫（不限副檔名，依檔案內容判斷），或新增一個空的資料庫。記住最近開過的資料庫，下次啟動自動開回上次那個。
+- **與執行中的程式共用**：資料庫正被其他程式使用時（例如 Node.js 的 better-sqlite3），遇到寫入鎖定會最多等 5 秒，而不是立刻顯示「database is locked」。WAL 模式的資料庫也能正常讀寫。
 - **伺服器上的資料庫（SSH）**：輸入主機（`user@host` 或 `~/.ssh/config` 裡的 Host）、資料庫路徑，必要時加上連接埠和私鑰，就能操作伺服器上的 SQLite 檔案。透過 SSH 在伺服器上執行 `sqlite3`，直接讀寫那個檔案，不會下載或上傳整個資料庫；共用同一條 SSH 連線，第一次之後的操作都很快。用 SSH 金鑰或 ssh-agent 登入（不會詢問密碼），伺服器需要裝有 `sqlite3`。檔案沒有寫入權限時自動以唯讀開啟。主機欄位的下拉選單列出 `~/.ssh/config` 裡的 Host，選了就自動填入連接埠、私鑰和上次在那台主機用過的資料庫路徑。
 - **瀏覽資料**：左側列出資料表和視圖，右側表格顯示資料，點欄位標題排序，每頁 200 列可翻頁。NULL 和 BLOB 以淡色顯示。
 - **直接編輯**：按兩下儲存格修改，右鍵可設為 NULL；狀態列的 ＋／− 按鈕新增或刪除資料列（刪除前會確認）。視圖和 `WITHOUT ROWID` 資料表為唯讀。
@@ -74,6 +75,7 @@ ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
 ### Features
 
 - **Open and create** any SQLite database (recognized by its contents, whatever the extension), or a new empty one. Recent databases are remembered, and the last one reopens at launch.
+- **Shared with running apps**: when another program is using the database (a Node.js app with better-sqlite3, say), MenuSQLite waits up to 5 seconds for its lock instead of failing at once with "database is locked". WAL-mode databases work as usual.
 - **Databases on servers (SSH)**: give the server (`user@host`, or a Host in `~/.ssh/config`) and the database's path, with a port and key if needed, to work on an SQLite file on a server. MenuSQLite runs `sqlite3` there over SSH, so the file stays where it is and is never copied back and forth; one shared SSH connection keeps later steps quick. Signs in with SSH keys or ssh-agent (it never asks for a password), and the server needs `sqlite3`. A file without write permission opens read-only. The server field lists the Hosts in `~/.ssh/config`; picking one fills in its port, key and the database path last used there.
 - **Browse** tables and views on the left and their rows on the right; click a header to sort; 200 rows a page. NULLs and BLOBs show dimmed.
 - **Edit in place**: double-click a cell to change it, or right-click to set it to NULL; add or delete rows with ＋ / − in the status bar (deleting asks first). Views and `WITHOUT ROWID` tables are read-only.

@@ -150,7 +150,8 @@ final class RemoteDatabase: DatabaseConnection {
     /// can be told apart, then asks how many rows changed and the last inserted rowid.
     private func execute(_ sql: String, _ bindings: [Value]) throws -> (result: ResultSet, lastRowID: Int64) {
         let statements = Self.statements(in: bindings.isEmpty ? sql : Self.inline(bindings, into: sql))
-        var script = ".bail on\n.headers on\n" + (csvOutput ? ".mode csv\n.nullvalue \(Self.nullMarker)\n" : ".mode quote\n")
+        // .timeout: wait for another program's lock, as on this Mac, rather than failing at once.
+        var script = ".bail on\n.timeout \(Int(Database.busyTimeout * 1000))\n.headers on\n" + (csvOutput ? ".mode csv\n.nullvalue \(Self.nullMarker)\n" : ".mode quote\n")
         for statement in statements {
             script += ".print \(Self.marker)\n" + statement + (statement.hasSuffix(";") ? "" : ";") + "\n"
         }

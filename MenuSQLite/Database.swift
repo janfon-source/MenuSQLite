@@ -186,6 +186,9 @@ final class Database: DatabaseConnection {
     var recentKey: String { url.path }
     private var handle: OpaquePointer?
 
+    /// How long to wait for another program's lock before giving up, in seconds.
+    static let busyTimeout = 5.0
+
     /// SQLite copies bound text and blobs right away, so the Swift buffers can go.
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -205,6 +208,9 @@ final class Database: DatabaseConnection {
             }
             readOnly = true
         }
+        // Another program (a Node app with better-sqlite3, say) may be writing; wait for it a while
+        // rather than failing at once with "database is locked".
+        sqlite3_busy_timeout(handle, Int32(Self.busyTimeout * 1000))
         // Reading the schema fails at once for a file that isn't a database.
         _ = try run("SELECT count(*) FROM sqlite_master")
     }
