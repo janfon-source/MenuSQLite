@@ -319,6 +319,21 @@ final class RemoteDatabase: DatabaseConnection {
     // MARK: SSH
 
     /// Runs a command on the server, with `input` on its standard input; returns what it printed.
+    /// When the database file was made and last changed, read with stat on the server: GNU
+    /// stat's form on Linux, else BSD's (a Mac). The making is nil where the file system doesn't
+    /// keep it (GNU stat says 0).
+    func fileDates() -> (created: Date?, modified: Date?) {
+        let path = Self.shellQuote(remote.path)
+        guard let output = try? ssh(command: "stat -c '%W %Y' \(path) 2>/dev/null || stat -f '%B %m' \(path)", input: "")
+        else { return (nil, nil) }
+        let times = output.split(whereSeparator: \.isWhitespace).map { TimeInterval($0) }
+        func date(_ i: Int) -> Date? {
+            guard times.indices.contains(i), let t = times[i], t > 0 else { return nil }
+            return Date(timeIntervalSince1970: t)
+        }
+        return (date(0), date(1))
+    }
+
     private func ssh(command: String, input: String) throws -> String {
         var arguments = [
             "-o", "BatchMode=yes",                        // never stop to ask for a password

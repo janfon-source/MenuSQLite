@@ -124,6 +124,26 @@ final class DatabaseInfoWindow: NSObject, NSWindowDelegate {
         return (main + wal, wal > 0 ? tr("含 -wal 檔 \(Self.bytes(wal))", "with \(Self.bytes(wal)) in its -wal file") : nil)
     }
 
+    /// When the file was made and last changed. On this Mac, a newer -wal file counts as the
+    /// change (that's where recent writes are until they're moved into the file).
+    private func fileDates() -> (created: Date?, modified: Date?) {
+        if let remote = database as? RemoteDatabase { return remote.fileDates() }
+        guard let local = database as? Database else { return (nil, nil) }
+        func attributes(_ path: String) -> [FileAttributeKey: Any] { (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:] }
+        let main = attributes(local.url.path), wal = attributes(local.url.path + "-wal")
+        let modified = [main[.modificationDate], wal[.modificationDate]].compactMap { $0 as? Date }.max()
+        return (main[.creationDate] as? Date, modified)
+    }
+
+    private static func date(_ date: Date?) -> String {
+        guard let date else { return tr("不詳", "Unknown") }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: Language.current == .en ? "en_US" : Language.current == .zhHans ? "zh_CN" : "zh_TW")
+        formatter.dateStyle = .long
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+
     private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -157,6 +177,9 @@ final class DatabaseInfoWindow: NSObject, NSWindowDelegate {
             let facts = try facts()
             let file = fileSize(facts)
             row(tr("大小", "Size"), Self.bytes(file.size) + (file.note.map { tr("（\($0)）", " (\($0))") } ?? ""))
+            let dates = fileDates()
+            row(tr("建立日期", "Created"), Self.date(dates.created))
+            row(tr("最後更動", "Last Changed"), Self.date(dates.modified))
             row(tr("未使用的空間", "Unused Space"), Self.bytes(facts.freeSize)
                 + tr("（\(facts.freePages) 頁，VACUUM 可以回收）", " (\(facts.freePages) pages, which VACUUM gives back)"))
             row(tr("頁面", "Pages"), tr("\(facts.pageCount) 頁，每頁 \(Self.bytes(facts.pageSize))", "\(facts.pageCount) of \(Self.bytes(facts.pageSize)) each"))
