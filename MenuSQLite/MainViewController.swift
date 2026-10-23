@@ -74,6 +74,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var editTableButton: NSButton!
     private var deleteTableButton: NSButton!
     private var importButton: NSButton!
+    /// Toolbar buttons that act on the open database: Refresh, Export, Info, Structure Document.
+    private var databaseButtons: [NSButton] = []
     private var runButton: NSButton!
     private var localized: [(view: NSView, zh: String, en: String)] = []
     private var escapeMonitor: Any?
@@ -103,6 +105,14 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                                #selector(togglePin(_:)))
         importButton = toolButton("square.and.arrow.down", "匯入 CSV 到選取的資料表（⇧⌘I）", "Import CSV into the Selected Table (⇧⌘I)",
                                   #selector(importCSV(_:)))
+        databaseButtons = [
+            toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
+            toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
+            toolButton("info.circle", "資料庫資訊：位置、大小、壓縮（⌘I）", "Database Info: location, size, compacting (⌘I)",
+                       #selector(showDatabaseInfo(_:))),
+            toolButton("doc.richtext", "結構文件：所有資料表和視圖的結構（Markdown，⇧⌘D）",
+                       "Structure Document: every table and view, as Markdown (⇧⌘D)", #selector(showSchemaDocument(_:))),
+        ]
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let toolbar = NSStackView(views: [
@@ -112,13 +122,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             toolButton("network", "透過 SSH 連線到伺服器上的資料庫（⇧⌘O）",
                        "Open a Database on a Server over SSH (⇧⌘O)", #selector(connectRemote(_:))),
             divider(),
-            toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
+            databaseButtons[0],
             importButton,
-            toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
-            toolButton("info.circle", "資料庫資訊：位置、大小、壓縮（⌘I）", "Database Info: location, size, compacting (⌘I)",
-                       #selector(showDatabaseInfo(_:))),
-            toolButton("doc.richtext", "結構文件：所有資料表和視圖的結構（Markdown，⇧⌘D）",
-                       "Structure Document: every table and view, as Markdown (⇧⌘D)", #selector(showSchemaDocument(_:))),
+            databaseButtons[1],
+            databaseButtons[2],
+            databaseButtons[3],
             spacer,
             pinButton,
             toolButton("ellipsis.circle", "更多", "More", #selector(showMoreMenu(_:))),
@@ -177,6 +185,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         applyLanguage()
         showTab()
         updateFooter()
+        updateTableButtons()   // nothing open yet: the database's buttons start off
         body.setPosition(190, ofDividerAt: 0)
     }
 
@@ -583,6 +592,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         newTableButton?.isEnabled = canChangeSchema
         editTableButton?.isEnabled = canChangeSchema && selected != nil
         deleteTableButton?.isEnabled = canChangeSchema && selected != nil
+        for button in databaseButtons { button.isEnabled = database != nil }
         // Rows can only be imported into a table, not a view.
         importButton?.isEnabled = canChangeSchema && selected?.kind == .table
     }
