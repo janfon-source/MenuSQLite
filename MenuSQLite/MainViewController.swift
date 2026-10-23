@@ -73,6 +73,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var newTableButton: NSButton!
     private var editTableButton: NSButton!
     private var deleteTableButton: NSButton!
+    private var importButton: NSButton!
     private var runButton: NSButton!
     private var localized: [(view: NSView, zh: String, en: String)] = []
     private var escapeMonitor: Any?
@@ -100,6 +101,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         pinButton = toolButton("pin", "釘選：視窗固定顯示，可拖曳上緣或空白處移動（按 Esc 仍可隱藏）；解除後回到選單列下方原本的大小",
                                "Pin: keep the window open and drag it anywhere by its top edge (Esc still hides it); unpinning puts it back under the menu bar at its earlier size",
                                #selector(togglePin(_:)))
+        importButton = toolButton("square.and.arrow.down", "匯入 CSV 到選取的資料表（⇧⌘I）", "Import CSV into the Selected Table (⇧⌘I)",
+                                  #selector(importCSV(_:)))
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let toolbar = NSStackView(views: [
@@ -110,7 +113,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                        "Open a Database on a Server over SSH (⇧⌘O)", #selector(connectRemote(_:))),
             divider(),
             toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
-            toolButton("square.and.arrow.down", "匯入 CSV 到選取的資料表（⇧⌘I）", "Import CSV into the Selected Table (⇧⌘I)", #selector(importCSV(_:))),
+            importButton,
             toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
             toolButton("doc.richtext", "結構文件：所有資料表和視圖的結構（Markdown，⇧⌘D）",
                        "Structure Document: every table and view, as Markdown (⇧⌘D)", #selector(showSchemaDocument(_:))),
@@ -578,6 +581,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         newTableButton?.isEnabled = canChangeSchema
         editTableButton?.isEnabled = canChangeSchema && selected != nil
         deleteTableButton?.isEnabled = canChangeSchema && selected != nil
+        // Rows can only be imported into a table, not a view.
+        importButton?.isEnabled = canChangeSchema && selected?.kind == .table
     }
 
     /// Reads the list of tables and views again, keeping the selection where it still exists.
