@@ -115,6 +115,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
             importButton,
             toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
+            toolButton("info.circle", "資料庫資訊：位置、大小、壓縮（⌘I）", "Database Info: location, size, compacting (⌘I)",
+                       #selector(showDatabaseInfo(_:))),
             toolButton("doc.richtext", "結構文件：所有資料表和視圖的結構（Markdown，⇧⌘D）",
                        "Structure Document: every table and view, as Markdown (⇧⌘D)", #selector(showSchemaDocument(_:))),
             spacer,
@@ -1069,6 +1071,14 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         loadStructure()
     }
 
+    /// Shows where the database is and how big, and lets it be compacted.
+    @objc func showDatabaseInfo(_ sender: Any?) {
+        guard let database else { return NSSound.beep() }
+        let window = DatabaseInfoWindow(database: database)
+        window.onChange = { [weak self] in self?.refresh(nil) }
+        keepingPopoverOpen { window.run() }
+    }
+
     /// Imports a CSV file into the selected table (or the one right-clicked), in one transaction:
     /// every row goes in, or on an error none does.
     @objc func importCSV(_ sender: Any?) {
@@ -1264,6 +1274,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         add(menu, tr("開啟資料庫…", "Open Database…"), #selector(openDocument(_:)), key: "o")
         add(menu, tr("新增資料庫…", "New Database…"), #selector(newDocument(_:)), key: "n")
         add(menu, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(connectRemote(_:)), key: "O")
+        add(menu, tr("資料庫資訊…", "Database Info…"), #selector(showDatabaseInfo(_:)), key: "i")
         add(menu, tr("匯入 CSV…", "Import CSV…"), #selector(importCSV(_:)), key: "I")
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
         add(menu, tr("結構文件（Markdown）…", "Structure Document (Markdown)…"), #selector(showSchemaDocument(_:)), key: "D")
@@ -1448,7 +1459,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)):
+        case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showDatabaseInfo(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)):
             return database != nil
         case #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)):
             return selected != nil
