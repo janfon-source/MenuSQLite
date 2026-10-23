@@ -17,6 +17,7 @@ A lightweight SQLite manager that lives in the macOS menu bar. Click the menu ba
 - **Structure**: columns (type, not null, default, primary key), indexes, row count and the syntax-colored CREATE statement.
 - **Run SQL** in a syntax-colored editor with ⌘↩; with text selected, only the selection runs, and several statements can run at once. Shows the results, rows changed, time taken or the error. [SQLite_SQL_ref.md](SQLite_SQL_ref.md) (in Chinese) is a guide to SQLite’s SQL with runnable examples.
 - **Structure document (Markdown)**: the document button in the toolbar, or ⇧⌘D, writes the structure of every table and view as one Markdown document: columns (type, not null, unique, default, primary key), foreign keys, indexes, triggers, row counts and CREATE statements, with tables lined up so the plain text reads well too. It opens in its own window rendered as Markdown (as 隨手記 previews it); switch to Markdown to see and edit the source, then Save As… (⌘S), Print… (⌘P; laid out again for the paper, always in light colors, and the print dialog can save a PDF) or Open in Default App; Regenerate makes it again from the database as it is now.
+- **Import CSV** (⇧⌘I, the toolbar, or right-click a table) into the selected table. The separator (comma, tab or semicolon) and the text encoding (UTF-8, UTF-16, Big5, GB18030) are worked out from the file; quoted fields may hold commas, quotes and line breaks. Choose which CSV field fills each column (matched by name when the first line names the fields), whether empty fields are NULL, and whether to add to the table's rows or replace them, with the file's first lines shown. It all goes in one transaction: on an error nothing is imported. Works on databases on servers too.
 - **Export CSV**: the query's results on the SQL tab, the whole table otherwise. UTF-8 with a BOM, so Excel reads Chinese correctly.
 - **Copy** selected rows with ⌘C as tab-separated text, ready to paste into a spreadsheet.
 - **Pinning**: the pin turns the window into a floating one you can drag anywhere (by its top edge or any empty space) and resize; it stays up while you use other apps and comes back where you left it. Unpin and it returns under the menu bar icon at the size it had before.
@@ -34,6 +35,7 @@ A lightweight SQLite manager that lives in the macOS menu bar. Click the menu ba
 | ⌘1 / ⌘2 / ⌘3 | Data / Structure / SQL tab |
 | ⌥⌘F | Filter rows |
 | ⌘↩ | Run SQL |
+| ⇧⌘I | Import CSV into the selected table |
 | ⇧⌘E | Export CSV |
 | ⌘C | Copy the selected rows |
 | Esc | Hide the window |
@@ -111,6 +113,7 @@ Old `sqlite3` versions (such as 3.7.17 on CentOS 7) work too: MenuSQLite notices
 - **結構**：欄位（類型、非空、預設值、主鍵）、索引、資料列數，以及有語法上色的 CREATE 語句。
 - **執行 SQL**：語法上色的編輯器，⌘↩ 執行；有選取文字時只執行選取的部分，可一次執行多個語句。顯示結果、影響列數、耗時或錯誤訊息。SQLite 的 SQL 語法和範例整理在 [SQLite_SQL_ref.md](SQLite_SQL_ref.md)。
 - **結構文件（Markdown）**：工具列的文件按鈕或 ⇧⌘D，把目前資料庫所有資料表和視圖的結構整理成一份 Markdown：欄位（類型、非空、唯一、預設值、主鍵）、外鍵、索引、觸發程序、資料列數和建立語句，表格已對齊，純文字也好讀。文件在獨立視窗以排版後的 Markdown 顯示（與隨手記的預覽相同）；切到「Markdown」可看原始碼並修改，再「另存新檔…」（⌘S）、「列印…」（⌘P，依紙張寬度重新排版，一律以淺色列印，也可在列印對話框存成 PDF）或「用預設 App 開啟」（例如隨手記）；「重新產生」依資料庫最新狀態重做。
+- **匯入 CSV**（⇧⌘I、工具列按鈕，或在資料表上按右鍵）到選取的資料表。自動判斷分隔符號（逗號、Tab、分號）和文字編碼（UTF-8、UTF-16、Big5、GB18030），引號裡的逗號、引號和換行都能正確讀取。可以指定每個欄位要填入哪一欄 CSV（第一列是欄位名稱時會依名稱自動配對）、空白欄位是否存成 NULL，以及加在現有資料後面或先清空再匯入，並預覽檔案的前幾列。整批在一個交易中完成，出錯就完全不匯入。伺服器上的資料庫也能用。
 - **匯出 CSV**：SQL 分頁匯出查詢結果，其他分頁匯出整個資料表。UTF-8 含 BOM，Excel 開啟中文不會亂碼。
 - **拷貝**：選取資料列按 ⌘C，以 Tab 分隔拷貝，可直接貼到試算表。
 - **釘選視窗**：按圖釘後，視窗變成可自由拖曳（拖上緣或空白處）、可調整大小的浮動視窗，切換到其他 App 也不會收起，下次顯示仍在原處；再按一次解除釘選，視窗回到選單列圖示下方、釘選前的大小。
@@ -128,6 +131,7 @@ Old `sqlite3` versions (such as 3.7.17 on CentOS 7) work too: MenuSQLite notices
 | ⌘1 / ⌘2 / ⌘3 | 資料 / 結構 / SQL 分頁 |
 | ⌥⌘F | 篩選資料列 |
 | ⌘↩ | 執行 SQL |
+| ⇧⌘I | 匯入 CSV 到選取的資料表 |
 | ⇧⌘E | 匯出 CSV |
 | ⌘C | 拷貝選取的資料列 |
 | Esc | 收起視窗 |

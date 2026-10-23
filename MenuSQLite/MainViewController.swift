@@ -110,6 +110,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                        "Open a Database on a Server over SSH (⇧⌘O)", #selector(connectRemote(_:))),
             divider(),
             toolButton("arrow.clockwise", "重新整理（⌘R）", "Refresh (⌘R)", #selector(refresh(_:))),
+            toolButton("square.and.arrow.down", "匯入 CSV 到選取的資料表（⇧⌘I）", "Import CSV into the Selected Table (⇧⌘I)", #selector(importCSV(_:))),
             toolButton("square.and.arrow.up", "匯出 CSV（⇧⌘E）", "Export CSV (⇧⌘E)", #selector(exportCSV(_:))),
             toolButton("doc.richtext", "結構文件：所有資料表和視圖的結構（Markdown，⇧⌘D）",
                        "Structure Document: every table and view, as Markdown (⇧⌘D)", #selector(showSchemaDocument(_:))),
@@ -195,6 +196,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         for (zh, en, action) in [("新增資料表…", "New Table…", #selector(newTable(_:))),
                                  ("新增視圖…", "New View…", #selector(newView(_:))),
                                  ("編輯…", "Edit…", #selector(editTable(_:))),
+                                 ("匯入 CSV…", "Import CSV…", #selector(importCSV(_:))),
                                  ("刪除…", "Delete…", #selector(deleteTable(_:)))] {
             let item = menu.addItem(withTitle: tr(zh, en), action: action, keyEquivalent: "")
             item.target = self
@@ -1009,6 +1011,19 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// The status line shows the page of rows, or a message such as a query's result or an error.
     private var message: (text: String, error: Bool)?
 
+    /// A word on what just happened, shown before the Data tab's row count for a few seconds.
+    private var notice: String?
+
+    private func showNotice(_ text: String) {
+        notice = text
+        updateFooter()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard self?.notice == text else { return }
+            self?.notice = nil
+            self?.updateFooter()
+        }
+    }
+
     private func showStatus(_ text: String, error: Bool = false) {
         message = (text, error)
         updateFooter()
@@ -1028,7 +1043,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         } else if paging {
             let shown = dataGrid.result.rows.count
             let filtered = filterBar.condition != nil
-            statusLabel.stringValue = (total == 0
+            statusLabel.stringValue = (notice.map { $0 + " · " } ?? "") + (total == 0
                 ? (filtered ? tr("沒有符合的資料", "No matching rows") : tr("沒有資料", "No rows"))
                 : tr("第 \(offset + 1)–\(offset + shown) 列，共 \(total) 列", "Rows \(offset + 1)–\(offset + shown) of \(total)")
                     + (filtered ? tr("（已篩選）", " (filtered)") : ""))
@@ -1047,6 +1062,43 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         updateFilterButton()
         loadPage()
         loadStructure()
+    }
+
+    /// Imports a CSV file into the selected table (or the one right-clicked), in one transaction:
+    /// every row goes in, or on an error none does.
+    @objc func importCSV(_ sender: Any?) {
+        guard canChangeSchema, let database, let object = actedOn, object.kind == .table else { return NSSound.beep() }
+        let open = NSOpenPanel()
+        open.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
+        open.message = tr("選擇要匯入「\(object.name)」的 CSV 檔", "Choose a CSV file to import into “\(object.name)”")
+        guard keepingPopoverOpen({ open.runModal() }) == .OK, let url = open.url else { return }
+        let columns: [Column]
+        let text: String
+        do {
+            guard let read = CSV.text(of: try Data(contentsOf: url)) else {
+                return showError(tr("無法讀取「\(url.lastPathComponent)」", "Couldn’t read “\(url.lastPathComponent)”"),
+                                 DatabaseError(message: tr("無法辨識檔案的文字編碼。", "Its text encoding isn’t one MenuSQLite knows.")))
+            }
+            text = read
+            columns = try database.columns(of: object.name)
+        } catch {
+            return showError(tr("無法讀取「\(url.lastPathComponent)」", "Couldn’t read “\(url.lastPathComponent)”"), error)
+        }
+        let window = ImportWindow(text: text, fileName: url.lastPathComponent, table: object.name, columns: columns)
+        guard keepingPopoverOpen({ window.run() }), let plan = window.result else { return }
+        do {
+            try database.run(plan.script)
+        } catch {
+            _ = try? database.run("ROLLBACK")   // on this Mac the transaction is still open; over SSH it's gone
+            return showError(tr("無法匯入，資料表沒有變更", "Couldn’t import; the table is unchanged"), error)
+        }
+        // Show the table it went into, with its new rows.
+        if let row = objects.firstIndex(of: object), sidebar.selectedRow != row {
+            sidebar.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        tab = .data
+        refresh(nil)
+        showNotice(tr("已匯入 \(plan.rows.count) 列", "Imported \(plan.rows.count) row\(plan.rows.count == 1 ? "" : "s")"))
     }
 
     /// Exports the query's results on the SQL tab, or the whole selected table otherwise.
@@ -1207,6 +1259,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         add(menu, tr("開啟資料庫…", "Open Database…"), #selector(openDocument(_:)), key: "o")
         add(menu, tr("新增資料庫…", "New Database…"), #selector(newDocument(_:)), key: "n")
         add(menu, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(connectRemote(_:)), key: "O")
+        add(menu, tr("匯入 CSV…", "Import CSV…"), #selector(importCSV(_:)), key: "I")
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
         add(menu, tr("結構文件（Markdown）…", "Structure Document (Markdown)…"), #selector(showSchemaDocument(_:)), key: "D")
         menu.addItem(.separator())
@@ -1404,6 +1457,8 @@ extension MainViewController: NSMenuItemValidation {
             return canChangeSchema
         case #selector(editTable(_:)):
             return canChangeSchema && actedOn != nil
+        case #selector(importCSV(_:)):
+            return canChangeSchema && actedOn?.kind == .table
         case #selector(deleteTable(_:)):
             return canChangeSchema && actedOn != nil
         default:
