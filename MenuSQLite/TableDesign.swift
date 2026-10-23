@@ -84,11 +84,11 @@ struct TableSnapshot {
 /// 3.25 and 3.35, and servers may have older), so other changes rebuild the table: a new one is
 /// made, the rows copied over, the old one dropped and the new one renamed, inside a transaction.
 enum TableDesign {
-    /// The types the editor offers, without their lengths, which go in a field of their own:
-    /// SQLite's own five first, then names other databases use, which SQLite takes by affinity.
-    static let types = ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "VARCHAR", "CHAR", "DECIMAL", "BOOLEAN", "DATE", "DATETIME"]
+    /// The types the editor offers: SQLite's own five. Other names (VARCHAR, DECIMAL…) can still
+    /// be typed, with a length in the field beside.
+    static let types = ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB"]
 
-    /// What a type's length starts as when it's chosen.
+    /// What a type's length starts as when it's chosen or typed.
     static let defaultLengths = ["VARCHAR": "255", "CHAR": "10", "DECIMAL": "10,2"]
 
     /// Types that take no length at all.
