@@ -145,21 +145,24 @@ extension DatabaseConnection {
         object.kind == .table && (try? run("SELECT rowid FROM \(Database.quote(object.name)) LIMIT 0")) != nil
     }
 
-    func rowCount(of name: String) throws -> Int {
-        guard case .integer(let n)? = try run("SELECT count(*) FROM \(Database.quote(name))").rows.first?.first else { return 0 }
+    /// How many rows the table has, or how many of them match `filter`, a WHERE clause and its values.
+    func rowCount(of name: String, filter: (sql: String, bindings: [Value])? = nil) throws -> Int {
+        let sql = "SELECT count(*) FROM \(Database.quote(name))" + (filter.map { " WHERE \($0.sql)" } ?? "")
+        guard case .integer(let n)? = try run(sql, filter?.bindings ?? []).rows.first?.first else { return 0 }
         return Int(n)
     }
 
     // MARK: Rows
 
-    /// A page of a table's rows. With `rowIDs`, each row's rowid comes first, for editing.
-    /// An empty page still has the table's columns.
-    func rows(of object: DatabaseObject, orderBy column: String?, ascending: Bool,
-              limit: Int, offset: Int, rowIDs: Bool) throws -> ResultSet {
+    /// A page of a table's rows, only those matching `filter` when there is one. With `rowIDs`,
+    /// each row's rowid comes first, for editing. An empty page still has the table's columns.
+    func rows(of object: DatabaseObject, filter: (sql: String, bindings: [Value])? = nil,
+              orderBy column: String?, ascending: Bool, limit: Int, offset: Int, rowIDs: Bool) throws -> ResultSet {
         let select = rowIDs ? "rowid, *" : "*"
+        let condition = filter.map { " WHERE \($0.sql)" } ?? ""
         let order = column.map { " ORDER BY \(Database.quote($0)) \(ascending ? "ASC" : "DESC")" } ?? ""
-        var page = try run("SELECT \(select) FROM \(Database.quote(object.name))\(order) LIMIT ? OFFSET ?",
-                           [.integer(Int64(limit)), .integer(Int64(offset))])
+        var page = try run("SELECT \(select) FROM \(Database.quote(object.name))\(condition)\(order) LIMIT ? OFFSET ?",
+                           (filter?.bindings ?? []) + [.integer(Int64(limit)), .integer(Int64(offset))])
         if page.columns.isEmpty {   // over SSH, an empty result says nothing of its columns
             page.columns = (rowIDs ? ["rowid"] : []) + (try columns(of: object.name)).map(\.name)
         }
@@ -229,6 +232,27 @@ final class Database: DatabaseConnection {
     /// `name` as an SQL identifier, safe whatever characters it has.
     static func quote(_ name: String) -> String {
         "\"" + name.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    /// Puts the values in place of the `?` placeholders as SQL literals, for SQL that is run where
+    /// values can't be bound (sqlite3 over SSH) or shown for people to read and edit.
+    /// A `?` inside quotes, as in a column named "price?", is left alone.
+    static func inline(_ values: [Value], into sql: String) -> String {
+        var values = values[...]
+        var quote: Character?
+        return sql.reduce(into: "") { out, character in
+            if let open = quote {
+                if character == open { quote = nil }   // '' and "" close and reopen, which comes out the same
+                out.append(character)
+            } else if character == "'" || character == "\"" {
+                quote = character
+                out.append(character)
+            } else if character == "?", let value = values.popFirst() {
+                out += value.sqlLiteral
+            } else {
+                out.append(character)
+            }
+        }
     }
 
     private var lastError: DatabaseError {

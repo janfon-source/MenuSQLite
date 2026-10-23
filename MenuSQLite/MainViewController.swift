@@ -16,6 +16,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private(set) var database: DatabaseConnection?
     private var objects: [DatabaseObject] = []
     private var selected: DatabaseObject? { sidebar.selectedRow >= 0 ? objects[sidebar.selectedRow] : nil }
+    /// The table the Data and Structure tabs were last loaded for. Reloading the table list
+    /// reselects the same row, which mustn't count as choosing it again and lose its filter.
+    private var shown: DatabaseObject?
 
     private enum Tab: Int { case data, structure, query }
     private var tab = Tab.data {
@@ -28,6 +31,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var total = 0
     private var sort: (column: String, ascending: Bool)?
     private var rowIDs: [Int64] = []   // of the rows showing, when they can be edited
+    /// The SELECT the SQL tab was last given to match the Data tab, and the last one of those run.
+    /// Once someone edits it, it's theirs and stays as they left it.
+    private var matchingSQL: String?
+    private var ranMatchingSQL: String?
 
     private enum Keys {
         static let size = "menusqlite.size"
@@ -46,6 +53,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private let content = NSView()
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
     private let dataGrid = Grid()
+    private let filterBar = FilterBar()
+    private var dataPane: NSStackView!
+    private var filterButton: NSButton!
     private let queryGrid = Grid()
     private let structureView = NSTextView.scrollableTextView()
     private let editorView = NSTextView.scrollableTextView()
@@ -68,7 +78,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var escapeMonitor: Any?
     private var sizeAtDragStart = NSSize.zero
 
-    private(set) var pinned = UserDefaults.standard.bool(forKey: Keys.pinned) {
+    /// False while there's no menu bar icon for the popover to hang from, so the window stays pinned.
+    var canUnpin = true
+
+    var pinned = UserDefaults.standard.bool(forKey: Keys.pinned) {
         didSet {
             UserDefaults.standard.set(pinned, forKey: Keys.pinned)
             applyPopoverBehavior()
@@ -217,6 +230,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             self?.sort = (column, ascending)
             self?.offset = 0
             self?.loadPage()
+            self?.matchQueryToData()
         }
         dataGrid.extraMenuItems = { [weak self] in
             guard let self, self.dataGrid.editable, !self.dataGrid.tableView.selectedRowIndexes.isEmpty else { return [] }
@@ -224,6 +238,21 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             item.target = self
             return [item]
         }
+
+        filterBar.onChange = { [weak self] in
+            self?.offset = 0
+            self?.loadPage()
+            self?.updateFilterButton()
+            self?.matchQueryToData()
+        }
+        dataPane = NSStackView(views: [filterBar, dataGrid.scrollView])
+        dataPane.orientation = .vertical
+        dataPane.distribution = .fill
+        dataPane.spacing = 0
+        filterBar.widthAnchor.constraint(equalTo: dataPane.widthAnchor).isActive = true
+        dataGrid.scrollView.widthAnchor.constraint(equalTo: dataPane.widthAnchor).isActive = true
+        filterBar.setHuggingPriority(.required, for: .vertical)
+        dataGrid.scrollView.setContentHuggingPriority(.init(1), for: .vertical)
 
         // Structure: columns, indexes and the CREATE statement.
         structureText.isEditable = false
@@ -262,7 +291,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
         emptyLabel.alignment = .center
         emptyLabel.textColor = .secondaryLabelColor
-        for view in [dataGrid.scrollView, structureView, querySplit, emptyLabel] {
+        for view in [dataPane!, structureView, querySplit, emptyLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
             let inset: CGFloat = view === emptyLabel ? 24 : 0
@@ -275,7 +304,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             if view !== emptyLabel { view.bottomAnchor.constraint(equalTo: content.bottomAnchor).isActive = true }
         }
 
-        let tabBar = NSStackView(views: [tabs])
+        filterButton = toolButton("line.3.horizontal.decrease.circle", "篩選資料列（⌥⌘F）", "Filter Rows (⌥⌘F)",
+                                  #selector(toggleFilter(_:)))
+        let tabSpacer = NSView()
+        tabSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let tabBar = NSStackView(views: [tabs, tabSpacer, filterButton])
         tabBar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         tabBar.setHuggingPriority(.required, for: .vertical)   // its own height; the content takes the rest
         let detail = NSStackView(views: [tabBar, content])
@@ -366,6 +399,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         runButton.title = tr("執行 ⌘↩", "Run ⌘↩")
         updateTitle()
         updateFooter()
+        filterBar.applyLanguage()
+        // The structure text carries its headings in the language it was built in.
+        loadStructure()
         showTab()
     }
 
@@ -421,15 +457,14 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private func show(_ database: DatabaseConnection) {
         _ = view   // reopening at launch comes before the window: the table list must exist
         self.database = database
+        shown = nil   // a table of the same name in another database is another table
         addRecent(database.recentKey)
         sort = nil
         offset = 0
         reloadObjects()
-        if editor.string.isEmpty, let first = objects.first {
-            editor.string = "SELECT * FROM \(Database.quote(first.name)) LIMIT 100;"
-            highlightSQL()
-        }
         queryGrid.show(ResultSet())
+        ranMatchingSQL = nil
+        matchQueryToData()
         updateTitle()
         focus()
     }
@@ -554,7 +589,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             sidebar.selectRowIndexes([index], byExtendingSelection: false)
             sidebar.scrollRowToVisible(index)
         }
-        if index == nil || objects[index!] != previous { selectionChanged() }
+        if index == nil || selected != shown { selectionChanged() }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { objects.count }
@@ -591,14 +626,18 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard notification.object as AnyObject === sidebar else { return }
+        guard notification.object as AnyObject === sidebar, selected != shown else { return }
         selectionChanged()
     }
 
     private func selectionChanged() {
+        shown = selected
         updateTableButtons()
         sort = nil
         offset = 0
+        filterBar.reset(columns: selectedColumns)
+        updateFilterButton()
+        matchQueryToData()
         loadPage()
         loadStructure()
         showTab()
@@ -705,9 +744,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         do {
             let editable = !database.readOnly && database.hasRowID(object)
-            total = try database.rowCount(of: object.name)
+            let filter = filterBar.condition
+            total = try database.rowCount(of: object.name, filter: filter)
             if offset >= total, total > 0 { offset = (total - 1) / pageSize * pageSize }
-            var page = try database.rows(of: object, orderBy: sort?.column, ascending: sort?.ascending ?? true,
+            var page = try database.rows(of: object, filter: filter, orderBy: sort?.column, ascending: sort?.ascending ?? true,
                                          limit: pageSize, offset: offset, rowIDs: editable)
             if editable {
                 // The rowid came first, to find each row again when it's edited; it isn't shown.
@@ -773,6 +813,23 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         } catch {
             showError(tr("無法刪除", "Couldn’t delete"), error)
         }
+    }
+
+    /// The selected table's columns, for the filter to choose from.
+    private var selectedColumns: [Column] {
+        guard let database, let object = selected else { return [] }
+        return (try? database.columns(of: object.name)) ?? []
+    }
+
+    @objc func toggleFilter(_ sender: Any?) {
+        guard selected != nil else { return NSSound.beep() }
+        tab = .data
+        filterBar.toggle()
+        updateFilterButton()
+    }
+
+    private func updateFilterButton() {
+        filterButton.contentTintColor = filterBar.isShowing ? .controlAccentColor : .secondaryLabelColor
     }
 
     @objc func previousPage(_ sender: Any?) {
@@ -849,6 +906,25 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: - SQL tab
 
+    /// Writes the Data tab's table, filter and sort into the SQL tab as a SELECT, unless the SQL
+    /// there is someone's own. With no table chosen yet, it starts from the first.
+    private func matchQueryToData() {
+        guard let object = selected ?? objects.first,
+              editor.string.isEmpty || editor.string == matchingSQL else { return }
+        var sql = "SELECT * FROM \(Database.quote(object.name))"
+        if object == selected, let filter = filterBar.condition {
+            sql += "\nWHERE " + Database.inline(filter.bindings, into: filter.sql)
+        }
+        if object == selected, let sort {
+            sql += "\nORDER BY \(Database.quote(sort.column)) \(sort.ascending ? "ASC" : "DESC")"
+        }
+        sql += "\nLIMIT 100;"
+        guard sql != editor.string else { return }
+        editor.string = sql
+        matchingSQL = sql
+        highlightSQL()
+    }
+
     @objc func runQuery(_ sender: Any?) {
         guard let database else { return NSSound.beep() }
         tab = .query
@@ -902,10 +978,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         guard isViewLoaded else { return }
         tabs.selectedSegment = tab.rawValue
         let hasTable = selected != nil
-        dataGrid.scrollView.isHidden = tab != .data || !hasTable
+        dataPane.isHidden = tab != .data || !hasTable
+        filterButton.isHidden = dataPane.isHidden
         structureView.isHidden = tab != .structure || !hasTable
         querySplit.isHidden = tab != .query || database == nil
-        emptyLabel.isHidden = !(dataGrid.scrollView.isHidden && structureView.isHidden && querySplit.isHidden)
+        emptyLabel.isHidden = !(dataPane.isHidden && structureView.isHidden && querySplit.isHidden)
         emptyLabel.stringValue = database == nil
             ? tr("按工具列的資料夾按鈕開啟 SQLite 資料庫（⌘O），或按 ⌘N 新增一個。",
                  "Open an SQLite database with the folder button (⌘O), or make a new one with ⌘N.")
@@ -913,6 +990,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             ? tr("這個資料庫還沒有資料表。到「SQL」分頁用 CREATE TABLE 建立。",
                  "This database has no tables yet. Make one with CREATE TABLE in the SQL tab.")
             : tr("從左邊選一個資料表。", "Choose a table on the left.")
+        // Showing a SELECT written to match the Data tab, its rows come along with it.
+        if tab == .query, database != nil, let sql = matchingSQL, editor.string == sql, ranMatchingSQL != sql {
+            ranMatchingSQL = sql
+            runQuery(nil)
+        }
         if tab == .query, !querySplitPlaced {
             // Once it first has a size: the editor gets the top 40%, the results the rest.
             view.layoutSubtreeIfNeeded()
@@ -945,9 +1027,12 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             statusLabel.textColor = message.error ? .systemRed : .secondaryLabelColor
         } else if paging {
             let shown = dataGrid.result.rows.count
-            statusLabel.stringValue = total == 0 ? tr("沒有資料", "No rows")
+            let filtered = filterBar.condition != nil
+            statusLabel.stringValue = (total == 0
+                ? (filtered ? tr("沒有符合的資料", "No matching rows") : tr("沒有資料", "No rows"))
                 : tr("第 \(offset + 1)–\(offset + shown) 列，共 \(total) 列", "Rows \(offset + 1)–\(offset + shown) of \(total)")
-                    + (dataGrid.editable || selected?.kind == .view ? "" : tr("（唯讀）", " (read-only)"))
+                    + (filtered ? tr("（已篩選）", " (filtered)") : ""))
+                + (dataGrid.editable || selected?.kind == .view ? "" : tr("（唯讀）", " (read-only)"))
             statusLabel.textColor = .secondaryLabelColor
         } else {
             statusLabel.stringValue = ""
@@ -958,6 +1043,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     @objc func refresh(_ sender: Any?) {
         reloadObjects()
+        filterBar.update(columns: selectedColumns)
+        updateFilterButton()
         loadPage()
         loadStructure()
     }
@@ -1070,6 +1157,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc func togglePin(_ sender: Any?) {
+        guard !pinned || canUnpin else { return NSSound.beep() }
         pinned.toggle()
     }
 
@@ -1144,6 +1232,14 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         menu.addItem(.separator())
         add(menu, tr("登入時自動開啟", "Open at Login"), #selector(toggleLaunchAtLogin(_:))).state =
             SMAppService.mainApp.status == .enabled ? .on : .off
+        // One of the two stays on, or there'd be no way back: the last one on can't be turned off.
+        let dock = add(menu, tr("顯示在 Dock", "Show in Dock"), #selector(toggleShowInDock(_:)))
+        dock.state = Presence.showInDock ? .on : .off
+        let menuBar = add(menu, tr("顯示在選單列", "Show in Menu Bar"), #selector(toggleShowInMenuBar(_:)))
+        menuBar.state = Presence.showInMenuBar ? .on : .off
+        let hint = NSMenuItem(title: tr("Dock 和選單列至少要顯示一個", "Shows in the Dock, the menu bar, or both"), action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(hint)
         menu.addItem(.separator())
         add(menu, tr("關於隨手庫", "About MenuSQLite"), #selector(showAbout(_:)))
         menu.addItem(withTitle: tr("結束隨手庫", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
@@ -1168,6 +1264,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         Language.current = language
     }
 
+    @objc private func toggleShowInDock(_ sender: Any?) { Presence.showInDock.toggle() }
+    @objc private func toggleShowInMenuBar(_ sender: Any?) { Presence.showInMenuBar.toggle() }
+
     @objc private func toggleLaunchAtLogin(_ sender: Any?) {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
@@ -1188,12 +1287,103 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: paragraph,
         ])
-        credits.append(NSAttributedString(string: "github.com/janfon-source/MenuSQLite", attributes: [
+        let icon = NSTextAttachment()
+        icon.image = Self.githubMark
+        // Sits the mark on the baseline at about the height of a capital letter.
+        let side = font.capHeight + 3
+        icon.bounds = NSRect(x: 0, y: (font.capHeight - side) / 2, width: side, height: side)
+        let iconString = NSMutableAttributedString(attachment: icon)
+        iconString.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: iconString.length))
+        credits.append(iconString)
+        // "account / repo", as GitHub shows it, with only the repository name linked.
+        credits.append(NSAttributedString(string: " janfon-source / ", attributes: [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraph,
+        ]))
+        credits.append(NSAttributedString(string: "MenuSQLite", attributes: [
             .font: font,
             .link: URL(string: "https://github.com/janfon-source/MenuSQLite")!,
             .paragraphStyle: paragraph,
         ]))
         NSApp.orderFrontStandardAboutPanel(options: [.applicationName: tr("隨手庫", "MenuSQLite"), .credits: credits])
+    }
+
+    /// GitHub's mark (the Octicon mark-github, 16×16), drawn in the label color so it follows
+    /// light and dark appearance.
+    private static let githubMark: NSImage = {
+        let svg = "M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+        let path = svgPath(svg)
+        return NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
+            NSColor.labelColor.setFill()
+            path.fill()
+            return true
+        }
+    }()
+
+    /// Builds a path from SVG path data, enough for the GitHub mark: M, C, A and Z, absolute or
+    /// relative, with repeated arguments.
+    private static func svgPath(_ data: String) -> NSBezierPath {
+        let path = NSBezierPath()
+        let scanner = Scanner(string: data)
+        scanner.charactersToBeSkipped = CharacterSet(charactersIn: " ,\n")
+        var command: Character = "M"
+        var current = NSPoint.zero
+        var start = NSPoint.zero
+        func number() -> CGFloat { CGFloat(scanner.scanDouble() ?? 0) }
+        // Arc flags may run together with the next number ("0 1-5.45"), so read them one digit at a time.
+        func flag() -> Bool {
+            _ = scanner.scanCharacters(from: CharacterSet(charactersIn: " ,"))
+            return scanner.scanCharacter() == "1"
+        }
+        while !scanner.isAtEnd {
+            let index = scanner.currentIndex
+            if let c = scanner.scanCharacter(), c.isLetter {
+                command = c
+            } else {
+                scanner.currentIndex = index
+            }
+            let relative = command.isLowercase
+            let base = relative ? current : .zero
+            switch command.uppercased() {
+            case "M":
+                current = NSPoint(x: base.x + number(), y: base.y + number())
+                start = current
+                path.move(to: current)
+                command = relative ? "l" : "L"
+            case "L":
+                current = NSPoint(x: base.x + number(), y: base.y + number())
+                path.line(to: current)
+            case "C":
+                let c1 = NSPoint(x: base.x + number(), y: base.y + number())
+                let c2 = NSPoint(x: base.x + number(), y: base.y + number())
+                current = NSPoint(x: base.x + number(), y: base.y + number())
+                path.curve(to: current, controlPoint1: c1, controlPoint2: c2)
+            case "A":
+                var r = number()
+                _ = number()  // The mark's arcs are circles, so the second radius and rotation are ignored.
+                _ = number()
+                let large = flag(), sweep = flag()
+                let end = NSPoint(x: base.x + number(), y: base.y + number())
+                // The center, from the SVG endpoint parameterization for a circle.
+                let mid = NSPoint(x: (current.x + end.x) / 2, y: (current.y + end.y) / 2)
+                let dx = end.x - current.x, dy = end.y - current.y
+                let half = hypot(dx, dy) / 2
+                r = max(r, half)
+                let h = sqrt(max(r * r - half * half, 0)) * (large == sweep ? -1 : 1)
+                let center = NSPoint(x: mid.x - h * dy / (2 * half), y: mid.y + h * dx / (2 * half))
+                let a1 = atan2(current.y - center.y, current.x - center.x) * 180 / .pi
+                let a2 = atan2(end.y - center.y, end.x - center.x) * 180 / .pi
+                path.appendArc(withCenter: center, radius: r, startAngle: a1, endAngle: a2, clockwise: !sweep)
+                current = end
+            case "Z":
+                path.close()
+                current = start
+            default:
+                return path
+            }
+        }
+        return path
     }
 }
 
@@ -1202,8 +1392,12 @@ extension MainViewController: NSMenuItemValidation {
         switch menuItem.action {
         case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)):
             return database != nil
-        case #selector(showDataTab(_:)), #selector(showStructureTab(_:)):
+        case #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)):
             return selected != nil
+        case #selector(toggleShowInDock(_:)):
+            return !Presence.showInDock || Presence.showInMenuBar
+        case #selector(toggleShowInMenuBar(_:)):
+            return !Presence.showInMenuBar || Presence.showInDock
         case #selector(addRow(_:)):
             return dataGrid.editable && tab == .data
         case #selector(newTable(_:)), #selector(newView(_:)):

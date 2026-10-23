@@ -40,6 +40,9 @@ enum MainMenu {
         add(view, tr("資料", "Data"), #selector(MainViewController.showDataTab(_:)), "1", target: controller)
         add(view, tr("結構", "Structure"), #selector(MainViewController.showStructureTab(_:)), "2", target: controller)
         add(view, "SQL", #selector(MainViewController.showQueryTab(_:)), "3", target: controller)
+        view.addItem(.separator())
+        add(view, tr("篩選資料列", "Filter Rows"), #selector(MainViewController.toggleFilter(_:)), "f", target: controller)
+            .keyEquivalentModifierMask = [.command, .option]
 
         let query = submenu(in: main, tr("查詢", "Query"))
         add(query, tr("執行", "Run"), #selector(MainViewController.runQuery(_:)), "\r", target: controller)
