@@ -60,6 +60,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var dataPane: NSStackView!
     private var filterButton: NSButton!
     private var columnsButton: NSButton!
+    /// The Structure tab's menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT.
+    private var tableMenuButton: NSButton!
     /// Columns left out of the Data tab, by table, for as long as the app runs. Every column
     /// shows until some are unticked.
     private var hiddenColumns: [String: Set<String>] = [:]
@@ -200,6 +202,16 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         fill.priority = .init(300)
         fill.isActive = true
 
+        // Over everything, while statements run off the main thread.
+        busyOverlay.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(busyOverlay)
+        NSLayoutConstraint.activate([
+            busyOverlay.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            busyOverlay.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            busyOverlay.topAnchor.constraint(equalTo: root.topAnchor),
+            busyOverlay.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+
         view = root
         preferredContentSize = root.frame.size
         NotificationCenter.default.addObserver(forName: Language.didChange, object: nil, queue: .main) { [weak self] _ in
@@ -274,7 +286,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         dataGrid.onSort = { [weak self] column, ascending in
             self?.sort = (column, ascending)
             self?.offset = 0
-            self?.loadPage()
+            self?.loadPage(recount: false)
             self?.matchQueryToData()
         }
         dataGrid.extraMenuItems = { [weak self] in
@@ -358,7 +370,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let tabSpacer = NSView()
         tabSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
         columnsButton = toolButton("checklist", "選擇要顯示的欄位（⌥⌘K）", "Choose the Columns to Show (⌥⌘K)", #selector(showColumnsMenu(_:)))
-        let tabBar = NSStackView(views: [tabs, tabSpacer, columnsButton, filterButton])
+        tableMenuButton = toolButton("gearshape", "資料表功能：壓縮、分析、匯出、列印、自動遞增值",
+                                     "Table Actions: compact, analyze, export, print, AUTOINCREMENT", #selector(showTableMenu(_:)))
+        let tabBar = NSStackView(views: [tabs, tabSpacer, columnsButton, filterButton, tableMenuButton])
         tabBar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         tabBar.setHuggingPriority(.required, for: .vertical)   // its own height; the content takes the rest
         let detail = NSStackView(views: [tabBar, content])
@@ -1098,36 +1112,55 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: - Data tab
 
-    /// Shows the current page of the selected table's rows.
-    private func loadPage() {
-        guard let database, let object = selected else {
+    /// Shows the current page of the selected table's rows, read off the main thread. With
+    /// `recount`, the rows are counted and the table checked for rowids again; paging and
+    /// sorting don't need to, and are a single query. `done` runs once the page shows.
+    private func loadPage(recount: Bool = true, then done: (() -> Void)? = nil) {
+        guard database != nil, let object = selected else {
             dataGrid.show(ResultSet())
             rowIDs = []
             total = 0
             updateFooter()
+            done?()
             return
         }
-        do {
-            let editable = !database.readOnly && database.hasRowID(object)
-            let filter = filterBar.condition
-            total = try database.rowCount(of: object.name, filter: filter)
+        let filter = filterBar.condition, sort = self.sort, requested = offset, pageSize = self.pageSize
+        let known = recount ? nil : (editable: dataGrid.editable, total: total)
+        perform(tr("正在讀取資料…", "Loading data…"), cancellable: true) { database in
+            let editable = known?.editable ?? (!database.readOnly && database.hasRowID(object))
+            let total = try known?.total ?? database.rowCount(of: object.name, filter: filter)
+            var offset = requested
             if offset >= total, total > 0 { offset = (total - 1) / pageSize * pageSize }
-            var page = try database.rows(of: object, filter: filter, orderBy: sort?.column, ascending: sort?.ascending ?? true,
+            let page = try database.rows(of: object, filter: filter, orderBy: sort?.column, ascending: sort?.ascending ?? true,
                                          limit: pageSize, offset: offset, rowIDs: editable)
-            if editable {
-                // The rowid came first, to find each row again when it's edited; it isn't shown.
-                rowIDs = page.rows.map { if case .integer(let id) = $0[0] { return id }; return 0 }
-                page.columns.removeFirst()
-                page.rows = page.rows.map { Array($0.dropFirst()) }
-            } else {
-                rowIDs = []
+            return (editable: editable, total: total, offset: offset, page: page)
+        } then: { [weak self] result in
+            guard let self else { return }
+            // Another table chosen meanwhile has its own page coming.
+            guard self.selected == object else { return }
+            switch result {
+            case .success(let loaded):
+                self.total = loaded.total
+                self.offset = loaded.offset
+                var page = loaded.page
+                if loaded.editable {
+                    // The rowid came first, to find each row again when it's edited; it isn't shown.
+                    self.rowIDs = page.rows.map { if case .integer(let id) = $0[0] { return id }; return 0 }
+                    page.columns.removeFirst()
+                    page.rows = page.rows.map { Array($0.dropFirst()) }
+                } else {
+                    self.rowIDs = []
+                }
+                self.dataGrid.editable = loaded.editable
+                self.dataGrid.show(page, sortedBy: sort)
+                self.updateFooter()
+            case .failure(let error):
+                self.dataGrid.show(ResultSet())
+                self.rowIDs = []
+                self.showStatus(DatabaseError.wasCancelled(error) ? tr("已取消讀取資料", "Loading cancelled") : error.localizedDescription,
+                                error: true)
             }
-            dataGrid.editable = editable
-            dataGrid.show(page, sortedBy: sort)
-            updateFooter()
-        } catch {
-            dataGrid.show(ResultSet())
-            showStatus(error.localizedDescription, error: true)
+            done?()
         }
     }
 
@@ -1136,8 +1169,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         do {
             try database.update(table, column: dataGrid.result.columns[column], to: value, rowID: rowIDs[row])
             let selection = dataGrid.tableView.selectedRowIndexes
-            loadPage()
-            dataGrid.tableView.selectRowIndexes(selection, byExtendingSelection: false)
+            loadPage { [weak self] in
+                guard let self else { return }
+                self.dataGrid.tableView.selectRowIndexes(selection.filteredIndexSet { $0 < self.dataGrid.tableView.numberOfRows },
+                                                         byExtendingSelection: false)
+            }
         } catch {
             showError(tr("無法修改", "Couldn’t change the value"), error)
         }
@@ -1151,10 +1187,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             sort = nil
             total += 1
             offset = (total - 1) / pageSize * pageSize
-            loadPage()
-            if let row = rowIDs.firstIndex(of: id) {
-                dataGrid.tableView.selectRowIndexes([row], byExtendingSelection: false)
-                dataGrid.tableView.scrollRowToVisible(row)
+            loadPage { [weak self] in
+                guard let self, let row = self.rowIDs.firstIndex(of: id) else { return }
+                self.dataGrid.tableView.selectRowIndexes([row], byExtendingSelection: false)
+                self.dataGrid.tableView.scrollRowToVisible(row)
             }
         } catch {
             showError(tr("無法新增資料列", "Couldn’t add a row"), error,
@@ -1276,31 +1312,71 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc func reloadRows(_ sender: Any?) {
         guard selected != nil else { return NSSound.beep() }
         let selection = dataGrid.tableView.selectedRowIndexes
-        loadPage()
-        dataGrid.tableView.selectRowIndexes(selection.filteredIndexSet { $0 < dataGrid.tableView.numberOfRows }, byExtendingSelection: false)
-        showNotice(tr("已重新載入", "Reloaded"))
+        loadPage { [weak self] in
+            guard let self else { return }
+            self.dataGrid.tableView.selectRowIndexes(selection.filteredIndexSet { $0 < self.dataGrid.tableView.numberOfRows },
+                                                     byExtendingSelection: false)
+            self.showNotice(tr("已重新載入", "Reloaded"))
+        }
     }
 
     @objc func previousPage(_ sender: Any?) {
         guard offset > 0 else { return }
         offset = max(0, offset - pageSize)
-        loadPage()
+        loadPage(recount: false)
     }
 
     @objc func nextPage(_ sender: Any?) {
         guard offset + pageSize < total else { return }
         offset += pageSize
-        loadPage()
+        loadPage(recount: false)
     }
 
     // MARK: - Structure tab
 
+    /// Whether the Structure tab shows an older table, or older facts, than it should. It's read
+    /// again when it next shows, so choosing tables on the Data tab doesn't wait for it.
+    private var structureStale = true
+
     private func loadStructure() {
-        let text = NSMutableAttributedString()
-        guard let database, let object = selected else {
-            structureText.textStorage?.setAttributedString(text)
+        structureStale = true
+        if isViewLoaded, tab == .structure { refreshStructure() }
+    }
+
+    /// What the Structure tab shows of a table or view.
+    private struct StructureInfo {
+        var facts: TableFacts?
+        var rows = 0
+        var columns: [Column] = []
+        var indexes: [Index]?
+        var create: String?
+    }
+
+    /// Reads the structure off the main thread, and shows it.
+    private func refreshStructure() {
+        structureStale = false
+        guard database != nil, let object = selected else {
+            structureText.textStorage?.setAttributedString(NSAttributedString())
             return
         }
+        perform(tr("正在讀取結構…", "Loading the structure…"), cancellable: true) { database in
+            var info = StructureInfo()
+            if object.kind == .table {
+                info.facts = try database.facts(of: object.name)
+                if info.facts != nil { info.rows = try database.rowCount(of: object.name) }
+                info.indexes = try database.indexes(of: object.name)
+            }
+            info.columns = try database.columns(of: object.name)
+            info.create = try database.createStatement(of: object.name)
+            return info
+        } then: { [weak self] result in
+            guard let self, self.selected == object else { return }
+            self.showStructure(result)
+        }
+    }
+
+    private func showStructure(_ result: Result<StructureInfo, Error>) {
+        let text = NSMutableAttributedString()
         let body: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
                                                    .foregroundColor: NSColor.labelColor]
         func heading(_ title: String) {
@@ -1313,13 +1389,29 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             attrs[.foregroundColor] = color
             text.append(NSAttributedString(string: s + "\n", attributes: attrs))
         }
-        do {
-            let columns = try database.columns(of: object.name)
+        let font = body[.font] as! NSFont
+        switch result {
+        case .failure(let error):
+            line(DatabaseError.wasCancelled(error) ? tr("已取消讀取", "Loading cancelled") : error.localizedDescription, color: .systemRed)
+        case .success(let info):
+            if let facts = info.facts {
+                heading(tr("資料表資訊", "Table Info"))
+                let rows = SchemaDocument.factRows(facts, rows: info.rows)
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.tabStops = [NSTextTab(textAlignment: .left, location: (rows.map {
+                    ($0[0] as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) + 16)]
+                for row in rows {
+                    let entry = NSMutableAttributedString(string: row[0] + "\t", attributes: [
+                        .font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.secondaryLabelColor])
+                    entry.append(NSAttributedString(string: row[1] + "\n", attributes: [
+                        .font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor]))
+                    text.append(entry)
+                }
+            }
             heading(tr("欄位", "Columns"))
             let rows = [[tr("名稱", "Name"), tr("類型", "Type"), tr("非空", "Not Null"), tr("預設值", "Default"), tr("主鍵", "Key")]]
-                + columns.map { [$0.name, $0.type, $0.notNull ? "✓" : "", $0.defaultValue ?? "", $0.primaryKey > 0 ? "\($0.primaryKey)" : ""] }
+                + info.columns.map { [$0.name, $0.type, $0.notNull ? "✓" : "", $0.defaultValue ?? "", $0.primaryKey > 0 ? "\($0.primaryKey)" : ""] }
             // Tab stops at each column's widest text keep the columns lined up, Chinese included.
-            let font = body[.font] as! NSFont
             var stop: CGFloat = 0
             let paragraph = NSMutableParagraphStyle()
             paragraph.tabStops = (0..<4).map { i in
@@ -1331,26 +1423,263 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                     .font: font, .paragraphStyle: paragraph,
                     .foregroundColor: n == 0 ? NSColor.secondaryLabelColor : NSColor.labelColor]))
             }
-            if object.kind == .table {
-                let indexes = try database.indexes(of: object.name)
+            if let indexes = info.indexes {
                 heading(tr("索引", "Indexes"))
                 if indexes.isEmpty { line(tr("（沒有）", "(none)"), color: .secondaryLabelColor) }
                 for index in indexes {
                     line("\(index.name)\(index.unique ? " UNIQUE" : "")  (\(index.columns.joined(separator: ", ")))")
                 }
-                heading(tr("資料列", "Rows"))
-                line(String(try database.rowCount(of: object.name)))
             }
-            if let sql = try database.createStatement(of: object.name) {
+            if let sql = info.create {
                 heading(tr("建立語句", "CREATE Statement"))
                 let statement = NSMutableAttributedString(string: sql + "\n", attributes: body)
                 SyntaxHighlighter.highlight(statement, language: "sql")
                 text.append(statement)
             }
-        } catch {
-            line(error.localizedDescription, color: .systemRed)
         }
         structureText.textStorage?.setAttributedString(text)
+    }
+
+    // MARK: - Working off the main thread
+
+    /// One queue for every database's statements, run in the order they were asked for.
+    private static let work = DispatchQueue(label: "com.jeff.menusqlite.work", qos: .userInitiated)
+    private let busyOverlay = BusyOverlay()
+    private var pendingWork = 0
+    /// Whether Cancel was pressed since the window was last free.
+    private var cancelRequested = false
+    /// SQL runs asked for and not yet done, so the ▶︎ stays blue until the last of them ends.
+    private var runsPending = 0
+
+    /// Runs `body` against the database off the main thread, the window covered meanwhile with
+    /// `message` (after a moment, so quick statements don't flash it), then hands its result to
+    /// `done` back on the main thread. With `rows`, the cover counts the rows coming in (on this
+    /// Mac); with `cancellable`, it has a Cancel button (and Esc) that stops the statement.
+    private func perform<T>(_ message: String, rows: Bool = false, cancellable: Bool = false,
+                            _ body: @escaping (DatabaseConnection) throws -> T,
+                            then done: @escaping (Result<T, Error>) -> Void) {
+        guard let database else { return }
+        if pendingWork == 0 { cancelRequested = false }
+        pendingWork += 1
+        busyOverlay.show(message)
+        busyOverlay.onCancel = cancellable ? { [weak self, weak database] in
+            self?.cancelRequested = true
+            database?.cancel()
+        } : nil
+        let overlay = busyOverlay
+        Self.work.async {
+            if rows {
+                database.onRows = { count in
+                    DispatchQueue.main.async {
+                        overlay.detail = tr("已讀取 \(count.formatted()) 列", "\(count.formatted()) rows read")
+                    }
+                }
+            }
+            let result = Result { try body(database) }
+            database.onRows = nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingWork -= 1
+                if self.pendingWork == 0 { self.busyOverlay.hide() }
+                done(result)
+            }
+        }
+    }
+
+    /// Whether SQL might change tables or rows: anything but statements that only read.
+    static func mayChange(_ sql: String) -> Bool {
+        let reading: Set<String> = ["SELECT", "EXPLAIN", "VALUES"]
+        // Comments out, then the first word of each statement. PRAGMA may set as well as read.
+        var text = sql.replacingOccurrences(of: #"(?s)/\*.*?\*/"#, with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"(?m)--.*$"#, with: " ", options: .regularExpression)
+        return text.split(separator: ";").contains { statement in
+            guard let word = statement.split(whereSeparator: { $0.isWhitespace || $0 == "(" }).first else { return false }
+            return !reading.contains(word.uppercased())
+        }
+    }
+
+    // MARK: - Table actions
+
+    @objc func showTableMenu(_ sender: Any?) {
+        guard let database, let object = selected else { return NSSound.beep() }
+        if tab != .structure { tab = .structure }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func item(_ zh: String, _ en: String, _ action: Selector, enabled: Bool = true) {
+            let item = menu.addItem(withTitle: tr(zh, en), action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+        }
+        let writable = !database.readOnly
+        if object.kind == .table {
+            item("壓縮資料庫（VACUUM）", "Compact Database (VACUUM)", #selector(vacuumDatabase(_:)), enabled: writable)
+            item("分析資料表（ANALYZE）", "Analyze Table (ANALYZE)", #selector(analyzeTable(_:)), enabled: writable)
+            menu.addItem(.separator())
+        }
+        item("匯出 Markdown…", "Export Markdown…", #selector(exportTableMarkdown(_:)))
+        item("列印…", "Print…", #selector(printTable(_:)))
+        if object.kind == .table {
+            let auto = writable && (try? database.facts(of: object.name))??.autoIncrement == true
+            menu.addItem(.separator())
+            item("重設自動遞增值", "Reset AUTOINCREMENT", #selector(resetAutoIncrement(_:)), enabled: auto)
+            item("將自動遞增值設為…", "Set AUTOINCREMENT to…", #selector(setAutoIncrement(_:)), enabled: auto)
+        }
+        // Its right edge under the button's, so it opens into the window rather than past it.
+        menu.popUp(positioning: nil, at: NSPoint(x: tableMenuButton.bounds.width - menu.size.width,
+                                                 y: tableMenuButton.bounds.height + 4), in: tableMenuButton)
+    }
+
+    private func inform(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        keepingPopoverOpen { _ = alert.runModal() }
+    }
+
+    /// SQLite has no OPTIMIZE for one table; VACUUM rebuilds the whole file, this table with it.
+    @objc func vacuumDatabase(_ sender: Any?) {
+        guard database != nil, let object = selected, object.kind == .table else { return NSSound.beep() }
+        perform(tr("正在壓縮資料庫（VACUUM）…", "Compacting the database (VACUUM)…"), cancellable: true) { database in
+            let before = (try? database.facts(of: object.name))??.totalLength
+            try database.run("VACUUM")
+            return (before, (try? database.facts(of: object.name))??.totalLength)
+        } then: { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let (before, after)):
+                self.loadStructure()
+                var text = tr("VACUUM 重建了整個資料庫檔案，把刪除資料後留下的空間還給系統。",
+                              "VACUUM rebuilt the whole database file, giving back the space deleted rows left.")
+                if let before, let after {
+                    text += "\n\n" + tr("這個資料表：", "This table: ") + "\(TableFacts.bytes(before)) → \(TableFacts.bytes(after))"
+                }
+                self.inform(tr("已壓縮資料庫", "Database compacted"), text)
+            case .failure(let error) where DatabaseError.wasCancelled(error):
+                self.showNotice(tr("已取消 VACUUM，資料庫沒有變更", "VACUUM cancelled; the database is unchanged"))
+            case .failure(let error):
+                self.showError(tr("無法執行 VACUUM", "Couldn’t run VACUUM"), error)
+            }
+        }
+    }
+
+    @objc func analyzeTable(_ sender: Any?) {
+        guard database != nil, let object = selected, object.kind == .table else { return NSSound.beep() }
+        perform(tr("正在分析資料表（ANALYZE）…", "Analyzing the table (ANALYZE)…"), cancellable: true) { database in
+            try database.run("ANALYZE \(Database.quote(object.name))")
+        } then: { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.loadStructure()
+                self.inform(tr("已分析資料表", "Table analyzed"),
+                            tr("索引的統計資料已更新（存在 sqlite_stat1），查詢計畫會更準確。",
+                               "The index statistics are up to date (in sqlite_stat1), for better query plans."))
+            case .failure(let error) where DatabaseError.wasCancelled(error):
+                self.showNotice(tr("已取消 ANALYZE", "ANALYZE cancelled"))
+            case .failure(let error):
+                self.showError(tr("無法執行 ANALYZE", "Couldn’t run ANALYZE"), error)
+            }
+        }
+    }
+
+    /// The table's Markdown document, written off the main thread, for `use` once it's ready.
+    private func tableDocument(_ failure: String, _ use: @escaping (String, DatabaseObject, DatabaseConnection) -> Void) {
+        guard database != nil, let object = selected else { return NSSound.beep() }
+        perform(tr("正在產生 Markdown…", "Writing the Markdown…")) { database in
+            (try SchemaDocument.markdown(for: object, in: database), database)
+        } then: { [weak self] result in
+            switch result {
+            case .success(let (markdown, database)): use(markdown, object, database)
+            case .failure(let error): self?.showError(failure, error)
+            }
+        }
+    }
+
+    @objc func exportTableMarkdown(_ sender: Any?) {
+        tableDocument(tr("無法匯出", "Couldn’t export")) { [weak self] markdown, object, _ in
+            self?.saveTableMarkdown(markdown, of: object)
+        }
+    }
+
+    private func saveTableMarkdown(_ markdown: String, of object: DatabaseObject) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = object.name + ".md"
+        panel.allowedContentTypes = [.init(filenameExtension: "md") ?? .plainText]
+        panel.canCreateDirectories = true
+        guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
+        do {
+            try markdown.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            showError(tr("無法匯出", "Couldn’t export"), error)
+        }
+    }
+
+    /// Prints the table's document, laid out as the structure document prints.
+    @objc func printTable(_ sender: Any?) {
+        tableDocument(tr("無法列印", "Couldn’t print")) { [weak self] markdown, object, database in
+            self?.printTableDocument(markdown, of: object, in: database)
+        }
+    }
+
+    private func printTableDocument(_ markdown: String, of object: DatabaseObject, in database: DatabaseConnection) {
+        let document = SchemaWindow(databaseName: "\(database.name) \(object.name)", markdown: markdown) { markdown }
+        let operation = document.printOperation()
+        operation.jobTitle = object.name
+        keepingPopoverOpen { _ = operation.run() }
+    }
+
+    /// Starts AUTOINCREMENT over, at one past the largest rowid the table has.
+    @objc func resetAutoIncrement(_ sender: Any?) {
+        guard let database, let object = selected else { return NSSound.beep() }
+        do {
+            let next = try database.nextFreeAutoIncrement(of: object.name)
+            let current = try database.facts(of: object.name)?.nextRowID
+            let alert = NSAlert()
+            alert.messageText = tr("要重設「\(object.name)」的自動遞增值嗎？", "Reset “\(object.name)”’s AUTOINCREMENT?")
+            alert.informativeText = tr("下一筆新資料的編號會從 \(current.map(String.init) ?? "—") 改成 \(next)（目前最大值加 1）。",
+                                       "The next new row will get \(next) (one past the largest) instead of \(current.map(String.init) ?? "—").")
+            alert.addButton(withTitle: tr("重設", "Reset"))
+            alert.addButton(withTitle: tr("取消", "Cancel"))
+            guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
+            let now = try database.setAutoIncrement(of: object.name, to: next)
+            loadStructure()
+            inform(tr("已重設自動遞增值", "AUTOINCREMENT reset"),
+                   tr("下一個自動遞增值：\(now.map(String.init) ?? "—")", "Next AUTOINCREMENT: \(now.map(String.init) ?? "—")"))
+        } catch {
+            showError(tr("無法重設自動遞增值", "Couldn’t reset AUTOINCREMENT"), error)
+        }
+    }
+
+    /// Sets AUTOINCREMENT to a value of one's own; SQLite won't go below one past the largest rowid.
+    @objc func setAutoIncrement(_ sender: Any?) {
+        guard let database, let object = selected else { return NSSound.beep() }
+        do {
+            let lowest = try database.nextFreeAutoIncrement(of: object.name)
+            let current = try database.facts(of: object.name)?.nextRowID
+            let field = NSTextField(string: String(current ?? lowest))
+            field.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
+            let alert = NSAlert()
+            alert.messageText = tr("設定「\(object.name)」的自動遞增值", "Set “\(object.name)”’s AUTOINCREMENT")
+            alert.informativeText = tr("下一筆新資料會用這個編號。不能小於目前最大值加 1（\(lowest)），設得比較小時，SQLite 會改用 \(lowest)。",
+                                       "The next new row gets this number. It can’t be below one past the largest (\(lowest)); SQLite uses \(lowest) for anything smaller.")
+            alert.accessoryView = field
+            alert.addButton(withTitle: tr("設定", "Set"))
+            alert.addButton(withTitle: tr("取消", "Cancel"))
+            alert.window.initialFirstResponder = field
+            while keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn {
+                guard let value = Int(field.stringValue.trimmingCharacters(in: .whitespaces)), value > 0 else {
+                    NSSound.beep()
+                    continue
+                }
+                let now = try database.setAutoIncrement(of: object.name, to: value)
+                loadStructure()
+                inform(tr("已設定自動遞增值", "AUTOINCREMENT set"),
+                       tr("下一個自動遞增值：\(now.map(String.init) ?? "—")", "Next AUTOINCREMENT: \(now.map(String.init) ?? "—")"))
+                return
+            }
+        } catch {
+            showError(tr("無法設定自動遞增值", "Couldn’t set AUTOINCREMENT"), error)
+        }
     }
 
     // MARK: - SQL tab
@@ -1381,34 +1710,41 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc func runQuery(_ sender: Any?) {
-        guard let database else { return NSSound.beep() }
+        guard database != nil else { return NSSound.beep() }
         tab = .query
         let selection = editor.selectedRange()
         let sql = selection.length > 0 ? (editor.string as NSString).substring(with: selection) : editor.string
         guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return NSSound.beep() }
-        // The statement holds this thread, so the blue has to be drawn before it starts.
         runState = .running
-        runButton.display()
-        CATransaction.flush()   // layers reach the screen when the run loop turns, which it won't till the end
-        defer { runState = .done }
+        runsPending += 1
         let start = Date()
-        do {
-            let result = try database.run(sql)
+        perform(tr("正在執行 SQL…", "Running the SQL…"), rows: true, cancellable: true) { database in
+            try database.run(sql)
+        } then: { [weak self] result in
+            guard let self else { return }
+            self.runsPending -= 1
+            if self.runsPending == 0 { self.runState = .done }
             let time = String(format: "%.0f ms", Date().timeIntervalSince(start) * 1000)
-            queryGrid.show(result)
-            if result.columns.isEmpty {
-                showStatus(tr("已執行，影響 \(result.changes) 列 · \(time)", "Done, \(result.changes) rows changed · \(time)"))
-            } else {
-                showStatus(tr("\(result.rows.count) 列 · \(time)", "\(result.rows.count) rows · \(time)")
-                           + (result.changes > 0 ? tr("，影響 \(result.changes) 列", ", \(result.changes) changed") : ""))
+            switch result {
+            case .success(let result):
+                self.queryGrid.show(result)
+                if result.columns.isEmpty {
+                    self.showStatus(tr("已執行，影響 \(result.changes) 列 · \(time)", "Done, \(result.changes) rows changed · \(time)"))
+                } else {
+                    self.showStatus(tr("\(result.rows.count) 列 · \(time)", "\(result.rows.count) rows · \(time)")
+                                    + (result.changes > 0 ? tr("，影響 \(result.changes) 列", ", \(result.changes) changed") : ""))
+                }
+            case .failure(let error):
+                self.showStatus(DatabaseError.wasCancelled(error) ? tr("已取消執行 · \(time)", "Cancelled · \(time)") : error.localizedDescription,
+                                error: true)
             }
-        } catch {
-            showStatus(error.localizedDescription, error: true)
+            // A statement may have changed tables, or the rows of the one selected; one that only reads can't have.
+            if Self.mayChange(sql) {
+                self.reloadObjects()
+                self.loadPage()
+                self.loadStructure()
+            }
         }
-        // A statement may have changed tables, or the rows of the one selected.
-        reloadObjects()
-        loadPage()
-        loadStructure()
     }
 
     func textDidChange(_ notification: Notification) {
@@ -1459,6 +1795,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         filterButton.isHidden = dataPane.isHidden
         columnsButton.isHidden = dataPane.isHidden
         structureView.isHidden = tab != .structure || !hasTable
+        tableMenuButton.isHidden = structureView.isHidden
+        if !structureView.isHidden, structureStale { refreshStructure() }
         querySplit.isHidden = tab != .query || database == nil
         emptyLabel.isHidden = !(dataPane.isHidden && structureView.isHidden && querySplit.isHidden)
         emptyLabel.stringValue = database == nil
@@ -1576,49 +1914,62 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         let window = ImportWindow(text: text, fileName: url.lastPathComponent, table: object.name, columns: columns)
         guard keepingPopoverOpen({ window.run() }), let plan = window.result else { return }
-        do {
-            try database.run(plan.script)
-        } catch {
-            _ = try? database.run("ROLLBACK")   // on this Mac the transaction is still open; over SSH it's gone
-            return showError(tr("無法匯入，資料表沒有變更", "Couldn’t import; the table is unchanged"), error)
+        let script = plan.script
+        perform(tr("正在匯入 CSV…", "Importing CSV…")) { database in
+            do {
+                try database.run(script)
+            } catch {
+                _ = try? database.run("ROLLBACK")   // on this Mac the transaction is still open; over SSH it's gone
+                throw error
+            }
+        } then: { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                return self.showError(tr("無法匯入，資料表沒有變更", "Couldn’t import; the table is unchanged"), error)
+            }
+            // Show the table it went into, with its new rows.
+            if let row = self.objects.firstIndex(of: object), self.sidebar.selectedRow != row {
+                self.sidebar.selectRowIndexes([row], byExtendingSelection: false)
+            }
+            self.tab = .data
+            self.refresh(nil)
+            self.showNotice(tr("已匯入 \(plan.rows.count) 列", "Imported \(plan.rows.count) row\(plan.rows.count == 1 ? "" : "s")"))
         }
-        // Show the table it went into, with its new rows.
-        if let row = objects.firstIndex(of: object), sidebar.selectedRow != row {
-            sidebar.selectRowIndexes([row], byExtendingSelection: false)
-        }
-        tab = .data
-        refresh(nil)
-        showNotice(tr("已匯入 \(plan.rows.count) 列", "Imported \(plan.rows.count) row\(plan.rows.count == 1 ? "" : "s")"))
     }
 
     /// Exports the query's results on the SQL tab, or the whole selected table otherwise.
     @objc func exportCSV(_ sender: Any?) {
-        guard let database else { return NSSound.beep() }
-        let result: ResultSet
-        let name: String
-        do {
-            if tab == .query {
-                result = queryGrid.result
-                name = tr("查詢結果", "Query Results")
-            } else if let object = selected {
-                result = try database.run("SELECT * FROM \(Database.quote(object.name))")
-                name = object.name
-            } else {
-                return NSSound.beep()
-            }
-        } catch {
-            return showError(tr("無法匯出", "Couldn’t export"), error)
-        }
-        guard !result.columns.isEmpty else { return NSSound.beep() }
+        guard database != nil else { return NSSound.beep() }
+        let shown = tab == .query ? queryGrid.result : nil
+        let table = tab == .query ? nil : selected
+        guard shown.map({ !$0.columns.isEmpty }) ?? (table != nil) else { return NSSound.beep() }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = name + ".csv"
+        panel.nameFieldStringValue = (table?.name ?? tr("查詢結果", "Query Results")) + ".csv"
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.canCreateDirectories = true
         guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
-        do {
+        export(to: url) { database in
+            try shown ?? database.run("SELECT * FROM \(Database.quote(table!.name))")
+        }
+    }
+
+    /// Reads rows off the main thread and writes them to `url` as CSV, counting them as they
+    /// come; then says how many went, or that it was cancelled.
+    private func export(to url: URL, _ rows: @escaping (DatabaseConnection) throws -> ResultSet) {
+        perform(tr("正在匯出 CSV…", "Exporting CSV…"), rows: true, cancellable: true) { database in
+            let result = try rows(database)
             try CSV.data(result).write(to: url, options: .atomic)
-        } catch {
-            showError(tr("無法匯出", "Couldn’t export"), error)
+            return result.rows.count
+        } then: { [weak self] result in
+            switch result {
+            case .success(let count):
+                self?.showNotice(tr("已匯出 \(count.formatted()) 列到「\(url.lastPathComponent)」",
+                                    "Exported \(count.formatted()) row\(count == 1 ? "" : "s") to “\(url.lastPathComponent)”"))
+            case .failure(let error) where DatabaseError.wasCancelled(error):
+                self?.showNotice(tr("已取消匯出", "Export cancelled"))
+            case .failure(let error):
+                self?.showError(tr("無法匯出", "Couldn’t export"), error)
+            }
         }
     }
 
@@ -1638,7 +1989,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// and the columns showing, rather than the page of 200.
     @objc func exportRows(_ sender: Any?) {
         if tab == .query { return exportQuery() }
-        guard let database, let object = selected, let query = dataQuery else { return NSSound.beep() }
+        guard database != nil, let object = selected, let query = dataQuery else { return NSSound.beep() }
         let filter = filterBar.condition
 
         let panel = NSSavePanel()
@@ -1646,14 +1997,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.canCreateDirectories = true
         guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
-        do {
-            let result = try database.run(query.sql, query.bindings)
-            try CSV.data(result).write(to: url, options: .atomic)
-            showNotice(tr("已匯出 \(result.rows.count) 列到「\(url.lastPathComponent)」",
-                          "Exported \(result.rows.count) row\(result.rows.count == 1 ? "" : "s") to “\(url.lastPathComponent)”"))
-        } catch {
-            showError(tr("無法匯出", "Couldn’t export"), error)
-        }
+        export(to: url) { database in try database.run(query.sql, query.bindings) }
     }
 
     /// What the SQL tab's export button writes: the SELECT written to match the Data tab, run
@@ -1692,13 +2036,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.canCreateDirectories = true
         guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
-        do {
-            guard let result = try queryExportResult() else { return NSSound.beep() }
-            try CSV.data(result).write(to: url, options: .atomic)
-            showStatus(tr("已匯出 \(result.rows.count) 列到「\(url.lastPathComponent)」",
-                          "Exported \(result.rows.count) row\(result.rows.count == 1 ? "" : "s") to “\(url.lastPathComponent)”"))
-        } catch {
-            showError(tr("無法匯出", "Couldn’t export"), error)
+        self.export(to: url) { database in
+            switch export {
+            case .matching(let sql): return try database.run(sql)
+            case .results(let shown): return shown
+            }
         }
     }
 
@@ -1708,13 +2050,18 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Writes the structure of every table and view as Markdown and shows it in its own window.
     @objc func showSchemaDocument(_ sender: Any?) {
-        guard let database else { return NSSound.beep() }
-        let markdown: String
-        do {
-            markdown = try SchemaDocument.markdown(for: database)
-        } catch {
-            return showError(tr("無法製作結構文件", "Couldn’t make the structure document"), error)
+        guard database != nil else { return NSSound.beep() }
+        perform(tr("正在產生結構文件…", "Writing the structure document…"), cancellable: true) { database in
+            (database, try SchemaDocument.markdown(for: database))
+        } then: { [weak self] result in
+            switch result {
+            case .success(let (database, markdown)): self?.showSchemaDocument(markdown, of: database)
+            case .failure(let error): self?.showError(tr("無法製作結構文件", "Couldn’t make the structure document"), error)
+            }
         }
+    }
+
+    private func showSchemaDocument(_ markdown: String, of database: DatabaseConnection) {
         let window = SchemaWindow(databaseName: database.name, markdown: markdown) { [weak database] in
             guard let database else { throw DatabaseError(message: tr("資料庫已關閉。", "The database is closed.")) }
             return try SchemaDocument.markdown(for: database)
@@ -1792,6 +2139,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// Esc hides the window, except while editing text, where it ends the edit.
     private func installEscapeMonitor() {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // While a statement runs, keys do nothing here but Esc, which cancels it.
+            if let self, self.busyOverlay.isShowing, event.window === self.view.window {
+                if event.keyCode == 53 { self.busyOverlay.cancel(nil) }
+                return nil
+            }
             guard let self, event.keyCode == 53, let window = self.view.window, event.window === window,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.function).isEmpty,
                   !(window.firstResponder is NSText) || window.firstResponder === self.editor else { return event }
@@ -2016,6 +2368,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if busyOverlay.isShowing { return false }
         switch menuItem.action {
         case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showDatabaseInfo(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)),
              #selector(addToFavorites(_:)):

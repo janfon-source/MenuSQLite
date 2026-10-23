@@ -67,7 +67,16 @@ final class RemoteDatabase: DatabaseConnection {
     static var sshPath = "/usr/bin/ssh"
     /// For tests: read output as old sqlite3 would print it, even from a newer one.
     static var forceCSVOutput = false
-    static let timeout: TimeInterval = 30
+    /// How long a command may run. Long, since VACUUM on a large file takes a while and the
+    /// window offers Cancel meanwhile; a dropped connection is noticed sooner, by
+    /// ServerAliveInterval.
+    static let timeout: TimeInterval = 600
+    var onRows: ((Int) -> Void)?
+    /// The ssh running now, for cancel() to stop; and whether it was.
+    private var running: Process?
+    private var cancelled = false
+    private let lock = NSRecursiveLock()
+    private let runningLock = NSLock()
 
     /// Connects and checks the file: that it's there and readable, whether it's writable,
     /// and that the server has sqlite3.
@@ -139,11 +148,26 @@ final class RemoteDatabase: DatabaseConnection {
 
     @discardableResult
     func run(_ sql: String, _ bindings: [Value]) throws -> ResultSet {
-        try execute(sql, bindings).result
+        lock.lock()
+        defer { lock.unlock() }
+        return try execute(sql, bindings).result
     }
 
     func insertRow(into table: String) throws -> Int64 {
-        try execute("INSERT INTO \(Database.quote(table)) DEFAULT VALUES", []).lastRowID
+        lock.lock()
+        defer { lock.unlock() }
+        return try execute("INSERT INTO \(Database.quote(table)) DEFAULT VALUES", []).lastRowID
+    }
+
+    /// Stops the ssh running the statement. sqlite3 on the server goes with it (its input closes),
+    /// and with `.bail on` and no transaction left open, nothing is half done but what SQLite
+    /// would roll back anyway.
+    func cancel() {
+        runningLock.lock()
+        defer { runningLock.unlock() }
+        guard let running, running.isRunning else { return }
+        cancelled = true
+        running.terminate()
     }
 
     /// Sends the statements to sqlite3 on the server, each after a marker line so their output
@@ -365,6 +389,15 @@ final class RemoteDatabase: DatabaseConnection {
         process.standardInput = try FileHandle(forReadingFrom: inURL)
         process.standardOutput = try FileHandle(forWritingTo: outURL)
         process.standardError = try FileHandle(forWritingTo: errURL)
+        runningLock.lock()
+        cancelled = false
+        running = process
+        runningLock.unlock()
+        defer {
+            runningLock.lock()
+            running = nil
+            runningLock.unlock()
+        }
         try process.run()
         let deadline = Date().addingTimeInterval(Self.timeout)
         while process.isRunning {
@@ -375,6 +408,10 @@ final class RemoteDatabase: DatabaseConnection {
             }
             Thread.sleep(forTimeInterval: 0.01)
         }
+        runningLock.lock()
+        let wasCancelled = cancelled
+        runningLock.unlock()
+        if wasCancelled { throw DatabaseError.cancelled }
         let output = String(decoding: (try? Data(contentsOf: outURL)) ?? Data(), as: UTF8.self)
         let errors = String(decoding: (try? Data(contentsOf: errURL)) ?? Data(), as: UTF8.self)
         guard process.terminationStatus == 0 else { throw DatabaseError(message: Self.cleanError(errors, status: process.terminationStatus)) }

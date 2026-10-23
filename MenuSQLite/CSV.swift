@@ -3,19 +3,46 @@ import Foundation
 /// CSV (RFC 4180): query results written out, with fields that have commas, quotes or line
 /// breaks quoted; and files read in, for importing into a table.
 enum CSV {
-    /// UTF-8 with a byte-order mark, which Excel needs to read Chinese correctly.
+    /// UTF-8 with a byte-order mark, which Excel needs to read Chinese correctly. Written as
+    /// bytes, not Characters, which is several times quicker for a few hundred thousand rows.
     static func data(_ result: ResultSet) -> Data {
-        var text = line(result.columns)
-        for row in result.rows { text += line(row.map(\.csv)) }
-        return Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8)
+        var out: [UInt8] = [0xEF, 0xBB, 0xBF]
+        out.reserveCapacity(result.rows.count * max(1, result.columns.count) * 12)
+        line(result.columns, into: &out)
+        for row in result.rows { line(row.map(\.csv), into: &out) }
+        return Data(out)
     }
 
-    private static func line(_ fields: [String]) -> String {
-        fields.map { field in
-            field.contains(where: { $0 == "," || $0 == "\"" || $0.isNewline })
-                ? "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-                : field
-        }.joined(separator: ",") + "\r\n"
+    private static func line(_ fields: [String], into out: inout [UInt8]) {
+        for (i, field) in fields.enumerated() {
+            if i > 0 { out.append(UInt8(ascii: ",")) }
+            let bytes = field.utf8
+            // A comma, a quote or any line break (LF, VT, FF, CR, NEL, LS, PS) means quotes.
+            var needsQuotes = false
+            var previous: UInt8 = 0, beforePrevious: UInt8 = 0
+            for byte in bytes {
+                switch byte {
+                case 0x2C, 0x22, 0x0A...0x0D: needsQuotes = true
+                case 0x85 where previous == 0xC2: needsQuotes = true
+                case 0xA8...0xA9 where previous == 0x80 && beforePrevious == 0xE2: needsQuotes = true
+                default: break
+                }
+                if needsQuotes { break }
+                beforePrevious = previous
+                previous = byte
+            }
+            guard needsQuotes else {
+                out.append(contentsOf: bytes)
+                continue
+            }
+            out.append(0x22)
+            for byte in bytes {
+                if byte == 0x22 { out.append(0x22) }
+                out.append(byte)
+            }
+            out.append(0x22)
+        }
+        out.append(contentsOf: [0x0D, 0x0A])
     }
 
     // MARK: Reading

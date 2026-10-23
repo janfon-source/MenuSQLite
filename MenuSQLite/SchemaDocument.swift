@@ -38,6 +38,48 @@ enum SchemaDocument {
         return out.joined(separator: "\n") + "\n"
     }
 
+    /// One table or view on its own: what can be said of it, then its structure as in the whole
+    /// database's document.
+    static func markdown(for object: DatabaseObject, in database: DatabaseConnection, date: Date = Date()) throws -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var out = ["# " + (object.kind == .table ? tr("資料表：", "Table: ") : tr("視圖：", "View: ")) + object.name, ""]
+        out.append("- " + tr("資料庫", "Database") + tr("：", ": ") + "`\(database.location)`")
+        out.append("- " + tr("產生時間", "Generated") + tr("：", ": ") + formatter.string(from: date))
+        if object.kind == .table, let facts = try database.facts(of: object.name) {
+            out += ["", "**" + tr("資料表資訊", "Table Info") + "**", ""]
+            out += table([tr("項目", "Item"), tr("值", "Value")], "ll", factRows(facts, rows: try database.rowCount(of: object.name)))
+        }
+        var body = try section(object, in: database)
+        // Its own "### name" heading, which the title says, and a table's row count, which the facts do.
+        body.removeFirst(object.kind == .table ? 5 : 3)
+        return (out + ["", "**" + tr("欄位", "Columns") + "**", ""] + body).joined(separator: "\n") + "\n"
+    }
+
+    /// A table's facts as label and value, for the Structure tab and the table's document.
+    static func factRows(_ facts: TableFacts, rows: Int) -> [[String]] {
+        var out: [[String]] = []
+        func add(_ zh: String, _ en: String, _ value: String?) {
+            if let value, !value.isEmpty { out.append([tr(zh, en), value]) }
+        }
+        let number = NumberFormatter()
+        number.numberStyle = .decimal
+        func count(_ n: Int?) -> String? { n.map { number.string(from: NSNumber(value: $0)) ?? String($0) } }
+        add("資料列", "Rows", count(rows))
+        add("總大小", "Total Size", facts.totalLength.map { TableFacts.bytes($0) })
+        add("資料大小", "Data Size", facts.dataLength.map { TableFacts.bytes($0) })
+        add("索引大小", "Index Size", facts.dataLength == nil ? nil : TableFacts.bytes(facts.indexLength))
+        add("未使用的空間", "Unused Space", facts.unused.map { TableFacts.bytes($0) })
+        add("平均每列", "Average Row", facts.dataLength.flatMap { rows > 0 ? TableFacts.bytes($0 / rows) : nil })
+        if facts.autoIncrement {
+            add("下一個自動遞增值", "Next AUTOINCREMENT", count(facts.nextRowID))
+        } else {
+            add("下一個 rowid", "Next rowid", count(facts.nextRowID))
+        }
+        add("選項", "Options", facts.options.joined(separator: ", "))
+        return out
+    }
+
     private static func section(_ object: DatabaseObject, in database: DatabaseConnection) throws -> [String] {
         var out = ["", "### \(object.name)", ""]
         if object.kind == .table {

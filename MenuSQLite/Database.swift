@@ -41,6 +41,32 @@ enum Value: Equatable {
     }
 }
 
+/// What can be said of one table: its sizes, from the dbstat table (nil where SQLite was built
+/// without it), the next rowid or AUTOINCREMENT value, and the options it was made with.
+struct TableFacts {
+    var dataLength: Int?
+    var indexLength: Int?
+    var unused: Int?
+    /// Whether the table was made with AUTOINCREMENT, so sqlite_sequence remembers its numbers.
+    var autoIncrement: Bool
+    /// The rowid (or AUTOINCREMENT value) the next row gets; nil for a WITHOUT ROWID table.
+    var nextRowID: Int?
+    var options: [String]
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false   // "0 bytes", not "Zero KB"
+        return formatter
+    }()
+
+    static func bytes(_ count: Int?) -> String {
+        count.map { byteFormatter.string(fromByteCount: Int64($0)) } ?? "—"
+    }
+
+    var totalLength: Int? { dataLength.map { $0 + (indexLength ?? 0) } }
+}
+
 /// What a statement returned: its columns and rows, and how many rows it changed.
 struct ResultSet {
     var columns: [String] = []
@@ -74,6 +100,13 @@ struct Index {
 struct DatabaseError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+
+    /// What a statement stopped with cancel() fails with.
+    static let cancelled = DatabaseError(message: tr("已取消。", "Cancelled."))
+
+    static func wasCancelled(_ error: Error) -> Bool {
+        (error as? DatabaseError)?.message == cancelled.message
+    }
 }
 
 /// An open database, on this Mac or on a server reached over SSH. Each kind only runs SQL;
@@ -95,6 +128,14 @@ protocol DatabaseConnection: AnyObject {
 
     /// Adds a row of default values; returns its rowid.
     func insertRow(into table: String) throws -> Int64
+
+    /// Told how many rows have come in so far while a large result arrives, on the thread
+    /// running it (where the rows can be counted as they come).
+    var onRows: ((Int) -> Void)? { get set }
+
+    /// Stops the statement running now, from another thread; it then fails with
+    /// DatabaseError.cancelled.
+    func cancel()
 }
 
 extension DatabaseConnection {
@@ -152,6 +193,63 @@ extension DatabaseConnection {
         return Int(n)
     }
 
+    // MARK: A table's facts
+
+    private func number(_ sql: String, _ bindings: [Value] = []) throws -> Int? {
+        guard let value = try run(sql, bindings).rows.first?.first, value != .null else { return nil }
+        return Double(value.display).map { Int($0) }
+    }
+
+    /// The table's sizes, next rowid and options; nil for a view or a missing table.
+    func facts(of table: String) throws -> TableFacts? {
+        guard let sql = try run("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", [.text(table)])
+            .rows.first?.first?.display else { return nil }
+        let upper = sql.uppercased()
+        let autoIncrement = upper.contains("AUTOINCREMENT")
+        var facts = TableFacts(autoIncrement: autoIncrement, options: [])
+        if upper.range(of: #"WITHOUT\s+ROWID"#, options: .regularExpression) != nil { facts.options.append("WITHOUT ROWID") }
+        if upper.range(of: #"\)\s*(WITHOUT\s+ROWID\s*,\s*)?STRICT"#, options: .regularExpression) != nil { facts.options.append("STRICT") }
+        if autoIncrement { facts.options.append("AUTOINCREMENT") }
+        // dbstat counts the pages each b-tree takes and the bytes left unused in them.
+        if let sizes = try? run("""
+            SELECT SUM(CASE WHEN name = ? THEN pgsize END), SUM(CASE WHEN name <> ? THEN pgsize END), SUM(unused)
+            FROM dbstat WHERE name = ? OR name IN (SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?)
+            """, Array(repeating: .text(table), count: 4)).rows.first, sizes.count >= 3 {
+            func n(_ v: Value) -> Int? { v == .null ? nil : Double(v.display).map { Int($0) } }
+            facts.dataLength = n(sizes[0])
+            facts.indexLength = n(sizes[1]) ?? 0
+            facts.unused = n(sizes[2])
+        }
+        if !facts.options.contains("WITHOUT ROWID") {
+            let largest = try number("SELECT MAX(rowid) FROM \(Database.quote(table))") ?? 0
+            let sequence = autoIncrement ? try sequence(of: table) ?? 0 : 0
+            facts.nextRowID = max(largest, sequence) + 1
+        }
+        return facts
+    }
+
+    /// The last AUTOINCREMENT value sqlite_sequence remembers for the table.
+    func sequence(of table: String) throws -> Int? {
+        guard (try? run("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").rows.isEmpty) == false else { return nil }
+        return try number("SELECT seq FROM sqlite_sequence WHERE name = ?", [.text(table)])
+    }
+
+    /// The value AUTOINCREMENT would give next if it started over: one past the largest rowid.
+    func nextFreeAutoIncrement(of table: String) throws -> Int {
+        (try number("SELECT MAX(rowid) FROM \(Database.quote(table))") ?? 0) + 1
+    }
+
+    /// Makes the next AUTOINCREMENT value `value`, through sqlite_sequence. SQLite never goes
+    /// below one past the largest rowid, so it returns the value it ends up at.
+    @discardableResult
+    func setAutoIncrement(of table: String, to value: Int) throws -> Int? {
+        let seq = Value.integer(Int64(max(0, value - 1)))
+        if try run("UPDATE sqlite_sequence SET seq = ? WHERE name = ?", [seq, .text(table)]).changes == 0 {
+            try run("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)", [.text(table), seq])
+        }
+        return try facts(of: table)?.nextRowID
+    }
+
     // MARK: Rows
 
     /// A page of a table's rows, only those matching `filter` when there is one. With `rowIDs`,
@@ -188,6 +286,10 @@ final class Database: DatabaseConnection {
     var location: String { url.path }
     var recentKey: String { url.path }
     private var handle: OpaquePointer?
+    /// Statements run off the main thread while the window shows they're working; the lock keeps
+    /// two from using the one connection at once.
+    private let lock = NSRecursiveLock()
+    var onRows: ((Int) -> Void)?
 
     /// How long to wait for another program's lock before giving up, in seconds.
     static let busyTimeout = 5.0
@@ -256,13 +358,20 @@ final class Database: DatabaseConnection {
     }
 
     private var lastError: DatabaseError {
-        DatabaseError(message: String(cString: sqlite3_errmsg(handle)))
+        sqlite3_errcode(handle) == SQLITE_INTERRUPT ? .cancelled : DatabaseError(message: String(cString: sqlite3_errmsg(handle)))
+    }
+
+    /// SQLite stops the statement at its next step; safe from any thread.
+    func cancel() {
+        sqlite3_interrupt(handle)
     }
 
     // MARK: - Running SQL
 
     @discardableResult
     func run(_ sql: String, _ bindings: [Value]) throws -> ResultSet {
+        lock.lock()
+        defer { lock.unlock() }
         var result = ResultSet()
         let changesBefore = sqlite3_total_changes(handle)
         try sql.withCString { start in
@@ -305,6 +414,7 @@ final class Database: DatabaseConnection {
             switch sqlite3_step(statement) {
             case SQLITE_ROW:
                 rows.append((0..<count).map { value(statement, $0) })
+                if rows.count % 2000 == 0 { onRows?(rows.count) }
             case SQLITE_DONE:
                 return (columns, rows)
             default:
@@ -328,6 +438,8 @@ final class Database: DatabaseConnection {
 
     /// Adds a row of default values; returns its rowid.
     func insertRow(into table: String) throws -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
         try run("INSERT INTO \(Self.quote(table)) DEFAULT VALUES")
         return sqlite3_last_insert_rowid(handle)
     }
