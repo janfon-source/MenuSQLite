@@ -82,7 +82,8 @@ final class DatabaseInfoWindow: NSObject, NSWindowDelegate {
         stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 16, right: 20)
         stack.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView!.addSubview(stack)
-        for view in [line, autoVacuumHint, vacuumHint, message, closeRow] {
+        // The facts span the window, lined up with the maintenance section below.
+        for view in [grid, line, autoVacuumHint, vacuumHint, message, closeRow] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
         }
         NSLayoutConstraint.activate([
@@ -164,7 +165,7 @@ final class DatabaseInfoWindow: NSObject, NSWindowDelegate {
             label.textColor = .secondaryLabelColor
             let field = NSTextField(wrappingLabelWithString: value)
             field.isSelectable = selectable
-            field.preferredMaxLayoutWidth = 360
+            field.preferredMaxLayoutWidth = 370   // the window less its margins and the labels
             grid.addRow(with: [label, field])
         }
         let remote = database is RemoteDatabase
@@ -190,7 +191,8 @@ final class DatabaseInfoWindow: NSObject, NSWindowDelegate {
         } catch {
             row(tr("錯誤", "Error"), error.localizedDescription)
         }
-        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 0).xPlacement = .leading
+        grid.column(at: 0).width = 96
         autoVacuum.isEnabled = !database.readOnly
         vacuumButton.isEnabled = !database.readOnly
         if database.readOnly, message.stringValue.isEmpty {
