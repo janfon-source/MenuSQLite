@@ -1095,6 +1095,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
+    /// Runs the editor's SQL, then shows the table as it is now at once: the Data tab's columns
+    /// in their new order, the filter's columns, the Structure tab and the SQL tab's SELECT.
     private func changeSchema(_ sql: String, thenSelect name: String) {
         guard let database else { return }
         do {
@@ -1108,6 +1110,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             sidebar.scrollRowToVisible(row)
         }
         refresh(nil)
+        // Read now rather than when the tab is next shown (refresh read it if it's showing).
+        if structureStale { refreshStructure() }
+        matchQueryToData()
     }
 
     // MARK: - Data tab

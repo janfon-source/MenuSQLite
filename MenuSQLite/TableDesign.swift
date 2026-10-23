@@ -84,7 +84,54 @@ struct TableSnapshot {
 /// 3.25 and 3.35, and servers may have older), so other changes rebuild the table: a new one is
 /// made, the rows copied over, the old one dropped and the new one renamed, inside a transaction.
 enum TableDesign {
-    static let types = ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB"]
+    /// The types the editor offers, without their lengths, which go in a field of their own:
+    /// SQLite's own five first, then names other databases use, which SQLite takes by affinity.
+    static let types = ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "VARCHAR", "CHAR", "DECIMAL", "BOOLEAN", "DATE", "DATETIME"]
+
+    /// What a type's length starts as when it's chosen.
+    static let defaultLengths = ["VARCHAR": "255", "CHAR": "10", "DECIMAL": "10,2"]
+
+    /// Types that take no length at all.
+    static let lengthless: Set<String> = ["INTEGER", "INT", "TEXT", "REAL", "BLOB", "BOOLEAN", "DATE", "DATETIME", "ANY"]
+
+    /// Types whose "length" isn't a size: DECIMAL's digits and decimals.
+    private static let otherLengths: Set<String> = ["DECIMAL", "NUMERIC"]
+
+    /// A type split for the editor: its name with any words after the parentheses, and what's in
+    /// them. `VARCHAR(40)` is ("VARCHAR", "40").
+    static func split(_ type: String) -> (base: String, length: String) {
+        let text = type.trimmingCharacters(in: .whitespaces)
+        guard let open = text.firstIndex(of: "("), let close = text.lastIndex(of: ")"), open < close else { return (text, "") }
+        let base = text[..<open].trimmingCharacters(in: .whitespaces)
+        let rest = text[text.index(after: close)...].trimmingCharacters(in: .whitespaces)
+        return (rest.isEmpty ? base : base + " " + rest, String(text[text.index(after: open)..<close]))
+    }
+
+    /// The type as SQL from the editor's two fields: the length goes after the type's first word.
+    static func join(_ base: String, _ length: String) -> String {
+        let base = base.trimmingCharacters(in: .whitespaces), length = length.trimmingCharacters(in: .whitespaces)
+        let words = base.split(separator: " ", maxSplits: 1)
+        guard let first = words.first, !length.isEmpty else { return base }
+        return first + "(" + length + ")" + (words.count > 1 ? " " + words[1] : "")
+    }
+
+    /// The length a column gets when its type is changed from `old` to `new`: none for a type
+    /// that takes none, the usual one when there was none or its meaning changes, and otherwise
+    /// the one it had.
+    static func length(changingType old: String, to new: String, from length: String) -> String {
+        func key(_ base: String) -> String { base.split(separator: " ").first.map { $0.uppercased() } ?? "" }
+        let from = key(old), to = key(new)
+        if lengthless.contains(to) { return "" }
+        if length.isEmpty || otherLengths.contains(from) != otherLengths.contains(to) { return defaultLengths[to] ?? "" }
+        return length
+    }
+
+    /// What the length field suggests for a type, when it's empty.
+    static func lengthHint(for base: String) -> String {
+        let key = base.split(separator: " ").first.map { $0.uppercased() } ?? ""
+        if lengthless.contains(key) { return "" }
+        return otherLengths.contains(key) ? "10,2" : defaultLengths[key] ?? tr("長度", "length")
+    }
 
     static func snapshot(of table: String, in database: DatabaseConnection) throws -> TableSnapshot {
         var editable: [IndexDraft] = [], fixed: [(index: Index, sql: String)] = []

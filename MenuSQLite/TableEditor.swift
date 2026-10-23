@@ -1,7 +1,7 @@
 import AppKit
 
 /// A window for designing a new table or changing one: its name, and a row per column with
-/// type, key, NOT NULL, UNIQUE and default. The SQL it will run shows below as it's edited,
+/// type, length, key, NOT NULL, UNIQUE and default (dragged by the handle at the left to reorder). The SQL it will run shows below as it's edited,
 /// with any warning, such as a column's data being deleted.
 final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSComboBoxDelegate, NSWindowDelegate {
     private let panel: NSPanel
@@ -26,9 +26,11 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     var tableName: String { nameField.stringValue.trimmingCharacters(in: .whitespaces) }
 
     private enum Field: String, CaseIterable {
-        case name, type, primaryKey, notNull, unique, defaultValue
+        case handle, name, type, length, primaryKey, notNull, unique, defaultValue
         var title: String {
             switch self {
+            case .handle: return ""
+            case .length: return tr("長度", "Length")
             case .name: return tr("名稱", "Name")
             case .type: return tr("類型", "Type")
             case .primaryKey: return tr("主鍵", "Key")
@@ -39,6 +41,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         }
         var width: CGFloat {
             switch self {
+            case .handle: return 22
+            case .length: return 70
             case .name: return 150
             case .type: return 110
             case .primaryKey, .notNull, .unique: return 44
@@ -70,12 +74,12 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         self.snapshot = snapshot
         columns = snapshot?.columns ?? [ColumnDraft(name: "id", type: "INTEGER", primaryKey: true, autoincrement: true)]
         indexes = snapshot?.indexDrafts ?? []
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 660, height: 720),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
                         styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
         panel.delegate = self
         panel.title = snapshot == nil ? tr("新增資料表", "New Table") : tr("編輯資料表「\(snapshot!.name)」", "Edit Table “\(snapshot!.name)”")
-        panel.minSize = NSSize(width: 560, height: 580)
+        panel.minSize = NSSize(width: 640, height: 580)
         build()
         update()
     }
@@ -102,8 +106,17 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
             column.title = field.title
             column.width = field.width
             column.minWidth = field.width * 0.6
+            if field == .handle {
+                column.minWidth = field.width
+                column.maxWidth = field.width
+                column.headerToolTip = tr("拖曳這裡可以調整欄位順序", "Drag here to reorder the columns")
+            }
             table.addTableColumn(column)
         }
+        // Rows are dragged by the handle (or anywhere not taken by a control) into a new order.
+        table.registerForDraggedTypes([Self.rowType])
+        table.setDraggingSourceOperationMask(.move, forLocal: true)
+        table.draggingDestinationFeedbackStyle = .gap
         table.dataSource = self
         table.delegate = self
         table.rowHeight = 30
@@ -206,6 +219,23 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         guard let field = tableColumn.flatMap({ Field(rawValue: $0.identifier.rawValue) }) else { return nil }
         let column = columns[row]
         switch field {
+        case .handle:
+            let grip = NSImageView(image: NSImage(systemSymbolName: "line.3.horizontal",
+                                                  accessibilityDescription: tr("拖曳以調整順序", "Drag to reorder"))!)
+            grip.contentTintColor = .tertiaryLabelColor
+            grip.toolTip = tr("拖曳以調整順序", "Drag to reorder")
+            return centered(grip)
+        case .length:
+            let parts = TableDesign.split(column.type)
+            let text = NSTextField(string: parts.length)
+            text.isBordered = false
+            text.drawsBackground = false
+            text.placeholderString = TableDesign.lengthHint(for: parts.base)
+            text.toolTip = tr("SQLite 不會限制長度，只是記錄在建立語句裡。", "SQLite doesn’t enforce it; it’s only written in the CREATE statement.")
+            text.isEditable = !TableDesign.lengthless.contains(parts.base.split(separator: " ").first.map { $0.uppercased() } ?? "")
+            text.identifier = NSUserInterfaceItemIdentifier(field.rawValue)
+            text.delegate = self
+            return centered(text, fill: true)
         case .primaryKey, .notNull, .unique:
             let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggled(_:)))
             box.identifier = NSUserInterfaceItemIdentifier(field.rawValue)
@@ -214,7 +244,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         case .type:
             let combo = NSComboBox()
             combo.addItems(withObjectValues: TableDesign.types)
-            combo.stringValue = column.type
+            combo.stringValue = TableDesign.split(column.type).base
             combo.isBordered = false
             combo.identifier = NSUserInterfaceItemIdentifier(field.rawValue)
             combo.delegate = self
@@ -275,7 +305,10 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         case Field.name.rawValue:
             renameInIndexes(columns[row].name, to: field.stringValue)
             columns[row].name = field.stringValue
-        case Field.type.rawValue: columns[row].type = field.stringValue
+        case Field.type.rawValue:
+            columns[row].type = TableDesign.join(field.stringValue, TableDesign.split(columns[row].type).length)
+            reloadLength(of: row)
+        case Field.length.rawValue: columns[row].type = TableDesign.join(TableDesign.split(columns[row].type).base, field.stringValue)
         case Field.defaultValue.rawValue: columns[row].defaultValue = field.stringValue
         default: break
         }
@@ -286,8 +319,55 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         guard let combo = notification.object as? NSComboBox, combo.indexOfSelectedItem >= 0 else { return }
         let row = table.row(for: combo)
         guard columns.indices.contains(row) else { return }
-        columns[row].type = TableDesign.types[combo.indexOfSelectedItem]
+        let old = TableDesign.split(columns[row].type), base = TableDesign.types[combo.indexOfSelectedItem]
+        columns[row].type = TableDesign.join(base, TableDesign.length(changingType: old.base, to: base, from: old.length))
+        reloadLength(of: row)
         update()
+    }
+
+    /// Shows the row's length again, after its type changed: a new one, or a field that's off.
+    private func reloadLength(of row: Int) {
+        guard let column = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == Field.length.rawValue }) else { return }
+        table.reloadData(forRowIndexes: [row], columnIndexes: [column])
+    }
+
+    // MARK: Dragging into order
+
+    private static let rowType = NSPasteboard.PasteboardType("com.jeff.menusqlite.column-row")
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard tableView === table else { return nil }
+        let item = NSPasteboardItem()
+        item.setString(String(row), forType: Self.rowType)
+        return item
+    }
+
+    func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
+                   proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        guard tableView === table, info.draggingSource as? NSTableView === table else { return [] }
+        tableView.setDropRow(row, dropOperation: .above)   // between rows, never onto one
+        return .move
+    }
+
+    func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
+                   dropOperation: NSTableView.DropOperation) -> Bool {
+        guard tableView === table, let text = info.draggingPasteboard.pasteboardItems?.first?.string(forType: Self.rowType),
+              let from = Int(text) else { return false }
+        return moveColumn(from: from, to: row)
+    }
+
+    /// Moves a column to before the row at `to` (or to the end); false if it stays where it was.
+    @discardableResult
+    func moveColumn(from: Int, to row: Int) -> Bool {
+        guard columns.indices.contains(from) else { return false }
+        let to = from < row ? row - 1 : row
+        guard to != from, columns.indices.contains(to) else { return false }
+        panel.makeFirstResponder(nil)   // the text typed so far counts
+        columns.insert(columns.remove(at: from), at: to)
+        table.reloadData()
+        table.selectRowIndexes([to], byExtendingSelection: false)
+        update()
+        return true
     }
 
     // MARK: Adding and moving columns
@@ -300,7 +380,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         let row = columns.count - 1
         table.selectRowIndexes([row], byExtendingSelection: false)
         table.scrollRowToVisible(row)
-        table.editColumn(0, row: row, with: nil, select: true)
+        table.editColumn(table.column(withIdentifier: NSUserInterfaceItemIdentifier(Field.name.rawValue)), row: row, with: nil, select: true)
         update()
     }
 
