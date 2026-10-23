@@ -376,7 +376,7 @@ final class RemoteDatabase: DatabaseConnection {
             message.removeSubrange(range)
         }
         if message.contains("Permission denied") {
-            message += "\n" + tr("隨手庫用 SSH 金鑰或 ssh-agent 登入，不會詢問密碼；請先設定好金鑰登入。",
+            message += "\n" + tr("隨手SQLite 用 SSH 金鑰或 ssh-agent 登入，不會詢問密碼；請先設定好金鑰登入。",
                                  "MenuSQLite signs in with SSH keys or ssh-agent and never asks for a password; set up key login first.")
         }
         return message

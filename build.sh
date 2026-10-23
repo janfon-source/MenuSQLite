@@ -1,12 +1,12 @@
 #!/bin/zsh
-# Builds 隨手庫.app without Xcode (Command Line Tools are enough).
-# Usage:  ./build.sh            -> build/隨手庫.app
+# Builds 隨手SQLite.app without Xcode (Command Line Tools are enough).
+# Usage:  ./build.sh            -> build/隨手SQLite.app
 #         ./build.sh install    -> also copies it to /Applications
 set -euo pipefail
 cd "${0:A:h}"
 
-APP=build/隨手庫.app
-rm -rf "$APP"
+APP=build/隨手SQLite.app
+rm -rf "$APP" build/隨手庫.app   # the bundle was 隨手庫.app up to 2026.a22
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 [[ -f MenuSQLite/AppIcon.icns ]] || swift tools/make_icon.swift
@@ -23,8 +23,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>隨手庫</string>
-	<key>CFBundleDisplayName</key><string>隨手庫</string>
+	<key>CFBundleName</key><string>隨手SQLite</string>
+	<key>CFBundleDisplayName</key><string>隨手SQLite</string>
 	<key>CFBundleIdentifier</key><string>com.jeff.menusqlite</string>
 	<key>CFBundleExecutable</key><string>MenuSQLite</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
@@ -59,7 +59,7 @@ if [[ "${1:-}" == "install" ]]; then
     osascript -e 'tell application id "com.jeff.menusqlite" to quit' >/dev/null 2>&1 || true
     for _ in {1..20}; do pgrep -x MenuSQLite >/dev/null || break; sleep 0.5; done
   fi
-  rm -rf "/Applications/隨手庫.app"
+  rm -rf "/Applications/隨手庫.app" "/Applications/隨手SQLite.app"
   cp -R "$APP" /Applications/
-  echo "Installed to /Applications/隨手庫.app"
+  echo "Installed to /Applications/隨手SQLite.app"
 fi

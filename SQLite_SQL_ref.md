@@ -2,7 +2,7 @@
 
 這份文件整理 SQLite 常用的 SQL 語法：建立資料表、查詢與修改資料、索引、視圖、觸發程序、交易、常用函式和 PRAGMA，也列出和其他資料庫不同、容易踩到的地方。
 
-所有範例都用同一組資料（「部門」和「員工」兩個資料表），在空的資料庫裡從上往下執行就能得到文中的結果。在隨手庫裡新增一個資料庫，切到 SQL 分頁（⌘3），貼上範例後按 ⌘↩ 執行；只想執行其中一句，先選取那一句再按 ⌘↩。
+所有範例都用同一組資料（「部門」和「員工」兩個資料表），在空的資料庫裡從上往下執行就能得到文中的結果。在隨手SQLite 裡新增一個資料庫，切到 SQL 分頁（⌘3），貼上範例後按 ⌘↩ 執行；只想執行其中一句，先選取那一句再按 ⌘↩。
 
 標示「3.xx 起」的語法需要該版以上的 SQLite。可以用 `SELECT sqlite_version();` 查目前的版本。macOS 內建的版本很新；伺服器上的 sqlite3 可能很舊，文末的[版本對照](#版本對照)列出各功能從哪一版開始支援。
 
@@ -179,7 +179,7 @@ ALTER TABLE 舊部門 DROP COLUMN 分機;                   -- 刪除欄位（3.
 
 `ADD COLUMN` 不能加 `PRIMARY KEY` 或 `UNIQUE` 欄位；加 `NOT NULL` 時一定要有非 NULL 的預設值。`DROP COLUMN` 不能刪主鍵、有 UNIQUE 限制、被索引或外鍵用到的欄位。
 
-其他變更（改型別、加限制、調整欄位順序）要「重建」資料表：建新表、搬資料、刪舊表、改名。隨手庫的「編輯資料表」會自動產生這段 SQL：
+其他變更（改型別、加限制、調整欄位順序）要「重建」資料表：建新表、搬資料、刪舊表、改名。隨手SQLite 的「編輯資料表」會自動產生這段 SQL：
 
 ```sql
 PRAGMA foreign_keys = OFF;
@@ -710,9 +710,9 @@ DROP VIEW IF EXISTS 員工明細;
 ```
 
 - 可以指定欄位名稱：`CREATE VIEW v (名稱, 金額) AS SELECT …`。
-- SQLite 沒有 `ALTER VIEW`，要修改就刪掉重建。隨手庫的「編輯視圖」會在交易中自動做這件事。
+- SQLite 沒有 `ALTER VIEW`，要修改就刪掉重建。隨手SQLite 的「編輯視圖」會在交易中自動做這件事。
 - 視圖是唯讀的，不能直接 INSERT、UPDATE、DELETE；需要的話用 `INSTEAD OF` 觸發程序。
-- 建立視圖時 SQLite 不檢查參照的資料表或欄位是否存在，要等讀取時才會出錯。隨手庫會在儲存前先預覽一次查詢。
+- 建立視圖時 SQLite 不檢查參照的資料表或欄位是否存在，要等讀取時才會出錯。隨手SQLite 會在儲存前先預覽一次查詢。
 - `CREATE TEMP VIEW` 建立暫時的視圖，連線關閉就消失。
 
 ## 觸發程序
@@ -828,7 +828,7 @@ PRAGMA user_version = 2;
 SELECT type, name, sql FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name;
 ```
 
-隨手庫的「結構文件」（⇧⌘D）會把這些整理成 Markdown。
+隨手SQLite 的「結構文件」（⇧⌘D）會把這些整理成 Markdown。
 
 ### ATTACH：同時使用多個資料庫檔案
 

@@ -66,8 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func applyLanguage() {
         NSApp.mainMenu = MainMenu.build(main: main)
-        statusItem.button?.toolTip = tr("隨手庫", "MenuSQLite")
-        statusItem.button?.setAccessibilityLabel(tr("隨手庫", "MenuSQLite"))
+        statusItem.button?.toolTip = tr("隨手SQLite", "MenuSQLite")
+        statusItem.button?.setAccessibilityLabel(tr("隨手SQLite", "MenuSQLite"))
     }
 
     /// Adds or removes the Dock and menu bar icons to match the settings.
@@ -204,9 +204,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func showStatusMenu() {
         let menu = NSMenu()
-        menu.addItem(withTitle: tr("開啟隨手庫", "Open MenuSQLite"), action: #selector(openFromMenu), keyEquivalent: "").target = self
+        menu.addItem(withTitle: tr("開啟隨手SQLite", "Open MenuSQLite"), action: #selector(openFromMenu), keyEquivalent: "").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: tr("結束隨手庫", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: tr("結束隨手SQLite", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil

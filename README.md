@@ -1,4 +1,4 @@
-# MenuSQLite 隨手庫
+# MenuSQLite 隨手SQLite
 
 A lightweight SQLite manager that lives in the macOS menu bar. Click the menu bar icon to look things up, change data and run SQL; press Esc to put it away.
 
@@ -47,10 +47,10 @@ Requires macOS 13 or later, on Intel or Apple silicon.
 Paste this into Terminal to download the latest version, install it in Applications and open it:
 
 ```sh
-curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/MenuSQLite.zip -o /tmp/MenuSQLite.zip && ditto -x -k /tmp/MenuSQLite.zip /Applications && open /Applications/隨手庫.app
+curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/MenuSQLite.zip -o /tmp/MenuSQLite.zip && ditto -x -k /tmp/MenuSQLite.zip /Applications && open /Applications/隨手SQLite.app
 ```
 
-Or download the zip from [Releases](https://github.com/janfon-source/MenuSQLite/releases/latest), unzip it and move 隨手庫 to Applications. The app isn't notarized, so a browser download is blocked the first time: try to open it, click Done at the warning, then click Open Anyway in System Settings → Privacy & Security. The Terminal command above avoids this.
+Or download the zip from [Releases](https://github.com/janfon-source/MenuSQLite/releases/latest), unzip it and move 隨手SQLite to Applications. The app isn't notarized, so a browser download is blocked the first time: try to open it, click Done at the warning, then click Open Anyway in System Settings → Privacy & Security. The Terminal command above avoids this.
 
 ### Build from source
 
@@ -59,10 +59,10 @@ Requires Xcode or the Command Line Tools (`xcode-select --install`).
 ```sh
 git clone https://github.com/janfon-source/MenuSQLite.git
 cd MenuSQLite
-./build.sh install   # builds and installs /Applications/隨手庫.app
+./build.sh install   # builds and installs /Applications/隨手SQLite.app
 ```
 
-Run `./build.sh` alone to build into `build/隨手庫.app` without installing.
+Run `./build.sh` alone to build into `build/隨手SQLite.app` without installing.
 
 ## Requirements for databases on servers
 
@@ -141,10 +141,10 @@ Old `sqlite3` versions (such as 3.7.17 on CentOS 7) work too: MenuSQLite notices
 在「終端機」貼上這一行，會下載最新版、安裝到「應用程式」並打開：
 
 ```sh
-curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/MenuSQLite.zip -o /tmp/MenuSQLite.zip && ditto -x -k /tmp/MenuSQLite.zip /Applications && open /Applications/隨手庫.app
+curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/MenuSQLite.zip -o /tmp/MenuSQLite.zip && ditto -x -k /tmp/MenuSQLite.zip /Applications && open /Applications/隨手SQLite.app
 ```
 
-也可以到 [Releases](https://github.com/janfon-source/MenuSQLite/releases/latest) 下載壓縮檔，解壓縮後把「隨手庫」拖到「應用程式」。隨手庫沒有經過 Apple 公證，用瀏覽器下載的版本第一次打開會被擋下：先打開一次，出現警告後按「完成」，再到「系統設定」→「隱私權與安全性」，在下方按「強制打開」。用上面的終端機指令安裝則不會被擋。
+也可以到 [Releases](https://github.com/janfon-source/MenuSQLite/releases/latest) 下載壓縮檔，解壓縮後把「隨手SQLite」拖到「應用程式」。隨手SQLite 沒有經過 Apple 公證，用瀏覽器下載的版本第一次打開會被擋下：先打開一次，出現警告後按「完成」，再到「系統設定」→「隱私權與安全性」，在下方按「強制打開」。用上面的終端機指令安裝則不會被擋。
 
 #### 從原始碼編譯
 
@@ -153,19 +153,19 @@ curl -L https://github.com/janfon-source/MenuSQLite/releases/latest/download/Men
 ```sh
 git clone https://github.com/janfon-source/MenuSQLite.git
 cd MenuSQLite
-./build.sh install   # 編譯並安裝到 /Applications/隨手庫.app
+./build.sh install   # 編譯並安裝到 /Applications/隨手SQLite.app
 ```
 
-只想編譯不安裝就執行 `./build.sh`，結果在 `build/隨手庫.app`。
+只想編譯不安裝就執行 `./build.sh`，結果在 `build/隨手SQLite.app`。
 
 ### 連線到伺服器的需求
 
 透過 SSH 開啟伺服器上的資料庫時，需要：
 
-- 用 **SSH 金鑰或 ssh-agent** 登入伺服器（隨手庫不會詢問密碼）。
+- 用 **SSH 金鑰或 ssh-agent** 登入伺服器（隨手SQLite 不會詢問密碼）。
 - 伺服器上裝有 **`sqlite3` 指令**。
 
-隨手庫連線時會自動檢查，沒有 `sqlite3` 會直接提示。也可以在終端機手動確認：
+隨手SQLite 連線時會自動檢查，沒有 `sqlite3` 會直接提示。也可以在終端機手動確認：
 
 ```sh
 ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
@@ -182,9 +182,9 @@ ssh 主機名稱 'command -v sqlite3 && sqlite3 -version'
 | Alpine | `sudo apk add sqlite` |
 | macOS | 內建，不用安裝 |
 
-舊版的 `sqlite3`（例如 CentOS 7 內建的 3.7.17）也可以使用：隨手庫會自動偵測，改用 CSV 格式取得資料。這時以文字存放的數字會顯示成數字（只影響對齊），BLOB 欄位無法正確顯示。
+舊版的 `sqlite3`（例如 CentOS 7 內建的 3.7.17）也可以使用：隨手SQLite 會自動偵測，改用 CSV 格式取得資料。這時以文字存放的數字會顯示成數字（只影響對齊），BLOB 欄位無法正確顯示。
 
-**權限**：隨手庫用 SSH 登入的帳號讀寫檔案。要修改資料，這個帳號需要檔案和所在資料夾的寫入權限（SQLite 修改時會在同一個資料夾建立暫存檔），否則會以唯讀開啟。找不到檔案或沒有權限進入資料夾時，錯誤訊息會註明登入的帳號和主機，以及同一個資料夾裡的資料庫檔案。
+**權限**：隨手SQLite 用 SSH 登入的帳號讀寫檔案。要修改資料，這個帳號需要檔案和所在資料夾的寫入權限（SQLite 修改時會在同一個資料夾建立暫存檔），否則會以唯讀開啟。找不到檔案或沒有權限進入資料夾時，錯誤訊息會註明登入的帳號和主機，以及同一個資料夾裡的資料庫檔案。
 
 ## License
 

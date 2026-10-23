@@ -1241,8 +1241,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         hint.isEnabled = false
         menu.addItem(hint)
         menu.addItem(.separator())
-        add(menu, tr("關於隨手庫", "About MenuSQLite"), #selector(showAbout(_:)))
-        menu.addItem(withTitle: tr("結束隨手庫", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        add(menu, tr("關於隨手SQLite", "About MenuSQLite"), #selector(showAbout(_:)))
+        menu.addItem(withTitle: tr("結束隨手SQLite", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
@@ -1306,7 +1306,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             .link: URL(string: "https://github.com/janfon-source/MenuSQLite")!,
             .paragraphStyle: paragraph,
         ]))
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: tr("隨手庫", "MenuSQLite"), .credits: credits])
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: tr("隨手SQLite", "MenuSQLite"), .credits: credits])
     }
 
     /// GitHub's mark (the Octicon mark-github, 16×16), drawn in the label color so it follows

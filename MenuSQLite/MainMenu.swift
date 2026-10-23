@@ -6,8 +6,8 @@ enum MainMenu {
     static func build(main controller: MainViewController) -> NSMenu {
         let main = NSMenu()
 
-        let app = submenu(in: main, tr("隨手庫", "MenuSQLite"))
-        app.addItem(withTitle: tr("結束隨手庫", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let app = submenu(in: main, tr("隨手SQLite", "MenuSQLite"))
+        app.addItem(withTitle: tr("結束隨手SQLite", "Quit MenuSQLite"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let file = submenu(in: main, tr("檔案", "File"))
         add(file, tr("開啟資料庫…", "Open Database…"), #selector(MainViewController.openDocument(_:)), "o", target: controller)
