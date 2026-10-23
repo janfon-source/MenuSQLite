@@ -86,6 +86,35 @@ final class FilterBar: NSStackView {
         return .text(text)
     }
 
+    /// A condition as it stands, to put back later (when its connection's tab is shown again).
+    struct Saved {
+        let connector: String
+        let column: String
+        let comparison: String
+        let value: String
+    }
+
+    var saved: [Saved] {
+        conditions.map { Saved(connector: $0.connector.titleOfSelectedItem ?? "AND", column: $0.column.titleOfSelectedItem ?? "",
+                               comparison: $0.comparison.titleOfSelectedItem ?? "=", value: $0.value.stringValue) }
+    }
+
+    /// Puts saved conditions back, after `reset(columns:)` gave the table's columns. Says nothing
+    /// to the owner, which loads the rows itself.
+    func restore(_ saved: [Saved]) {
+        for entry in saved {
+            addCondition(after: conditions.last)
+            let condition = conditions[conditions.count - 1]
+            condition.connector.selectItem(withTitle: entry.connector)
+            if condition.column.indexOfItem(withTitle: entry.column) >= 0 { condition.column.selectItem(withTitle: entry.column) }
+            condition.comparison.selectItem(withTitle: entry.comparison)
+            condition.value.stringValue = entry.value
+            updateValueField(condition)
+        }
+        isHidden = conditions.isEmpty
+        applied = condition
+    }
+
     /// For a newly chosen table: its columns, and no conditions.
     func reset(columns: [Column]) {
         self.columns = columns

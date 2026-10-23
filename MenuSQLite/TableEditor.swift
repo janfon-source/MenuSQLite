@@ -3,12 +3,15 @@ import AppKit
 /// A window for designing a new table or changing one: its name, and a row per column with
 /// type, key, NOT NULL, UNIQUE and default. The SQL it will run shows below as it's edited,
 /// with any warning, such as a column's data being deleted.
-final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSComboBoxDelegate {
+final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSComboBoxDelegate, NSWindowDelegate {
     private let panel: NSPanel
     private let snapshot: TableSnapshot?
     private var columns: [ColumnDraft]
+    private var indexes: [IndexDraft]
     private let nameField = NSTextField()
     private let table = NSTableView()
+    private let indexTable = NSTableView()
+    private var removeIndexButton: NSButton!
     private let message = NSTextField(wrappingLabelWithString: "")
     private let preview = NSTextView.scrollableTextView()
     private var previewText: NSTextView { preview.documentView as! NSTextView }
@@ -44,15 +47,35 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         }
     }
 
+    private enum IndexField: String, CaseIterable {
+        case indexName, kind, indexColumns
+        var title: String {
+            switch self {
+            case .indexName: return tr("索引名稱", "Index Name")
+            case .kind: return tr("類型", "Kind")
+            case .indexColumns: return tr("欄位（可加 DESC 或 COLLATE NOCASE）", "Columns (with DESC or COLLATE NOCASE)")
+            }
+        }
+        var width: CGFloat {
+            switch self {
+            case .indexName: return 170
+            case .kind: return 100
+            case .indexColumns: return 330
+            }
+        }
+    }
+
     /// For a new table, `snapshot` is nil.
     init(snapshot: TableSnapshot?) {
         self.snapshot = snapshot
         columns = snapshot?.columns ?? [ColumnDraft(name: "id", type: "INTEGER", primaryKey: true, autoincrement: true)]
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
-                        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        indexes = snapshot?.indexDrafts ?? []
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 660, height: 720),
+                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
+        panel.delegate = self
         panel.title = snapshot == nil ? tr("新增資料表", "New Table") : tr("編輯資料表「\(snapshot!.name)」", "Edit Table “\(snapshot!.name)”")
-        panel.minSize = NSSize(width: 560, height: 440)
+        panel.minSize = NSSize(width: 560, height: 580)
         build()
         update()
     }
@@ -105,6 +128,38 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
                                                 removeButton, upButton, downButton, NSView()])
         columnButtons.spacing = 4
 
+        // The indexes made with CREATE INDEX; the key and UNIQUE ones are the checkboxes above.
+        for field in IndexField.allCases {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(field.rawValue))
+            column.title = field.title
+            column.width = field.width
+            column.minWidth = field == .kind ? 90 : 120
+            indexTable.addTableColumn(column)
+        }
+        indexTable.dataSource = self
+        indexTable.delegate = self
+        indexTable.rowHeight = 30
+        indexTable.usesAlternatingRowBackgroundColors = true
+        indexTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        let indexScroll = NSScrollView()
+        indexScroll.documentView = indexTable
+        indexScroll.hasVerticalScroller = true
+        indexScroll.borderType = .bezelBorder
+        indexScroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        let indexTitle = NSTextField(labelWithString: tr("索引", "Indexes"))
+        indexTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        let indexHint = NSTextField(labelWithString: tr("主鍵和單一欄位的唯一限制，用上方欄位的「主鍵」「唯一」勾選。",
+                                                        "The key and single-column UNIQUE constraints are the Key and Unique boxes above."))
+        indexHint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        indexHint.textColor = .secondaryLabelColor
+        indexHint.lineBreakMode = .byTruncatingTail
+        indexHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let indexHeader = NSStackView(views: [indexTitle, indexHint])
+        indexHeader.alignment = .firstBaseline
+        removeIndexButton = button("minus", "刪除索引", "Remove Index", #selector(removeIndex(_:)))
+        let indexButtons = NSStackView(views: [button("plus", "新增索引", "Add Index", #selector(addIndex(_:))), removeIndexButton, NSView()])
+        indexButtons.spacing = 4
+
         message.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         previewText.isEditable = false
         previewText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -119,7 +174,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         cancel.keyEquivalent = "\u{1b}"
         let actions = NSStackView(views: [NSView(), cancel, saveButton])
 
-        let stack = NSStackView(views: [nameRow, tableScroll, columnButtons, message,
+        let stack = NSStackView(views: [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message,
                                         NSTextField(labelWithString: tr("將執行的 SQL", "SQL to Run")), preview, actions])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -128,7 +183,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView!.addSubview(stack)
-        for view in [nameRow, tableScroll, columnButtons, message, preview, actions] {
+        stack.setCustomSpacing(14, after: columnButtons)
+        for view in [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, preview, actions] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
         }
         tableScroll.setContentHuggingPriority(.init(1), for: .vertical)
@@ -143,9 +199,10 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
 
     // MARK: The column table
 
-    func numberOfRows(in tableView: NSTableView) -> Int { columns.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { tableView === indexTable ? indexes.count : columns.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === indexTable { return indexCell(tableColumn, row: row) }
         guard let field = tableColumn.flatMap({ Field(rawValue: $0.identifier.rawValue) }) else { return nil }
         let column = columns[row]
         switch field {
@@ -205,10 +262,19 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
         if field === nameField { return update() }
+        if let indexField = field.identifier.flatMap({ IndexField(rawValue: $0.rawValue) }) {
+            let row = indexTable.row(for: field)
+            guard indexes.indices.contains(row) else { return }
+            if indexField == .indexName { indexes[row].name = field.stringValue.trimmingCharacters(in: .whitespaces) }
+            else { indexes[row].columns = IndexDraft.columns(from: field.stringValue) }
+            return update()
+        }
         let row = table.row(for: field)
         guard columns.indices.contains(row) else { return }
         switch field.identifier?.rawValue {
-        case Field.name.rawValue: columns[row].name = field.stringValue
+        case Field.name.rawValue:
+            renameInIndexes(columns[row].name, to: field.stringValue)
+            columns[row].name = field.stringValue
         case Field.type.rawValue: columns[row].type = field.stringValue
         case Field.defaultValue.rawValue: columns[row].defaultValue = field.stringValue
         default: break
@@ -241,7 +307,11 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     @objc private func removeColumn(_ sender: Any?) {
         let row = table.selectedRow
         guard columns.indices.contains(row) else { return }
-        columns.remove(at: row)
+        // Its indexes lose it; an index left with no column goes too.
+        let removed = columns.remove(at: row).name
+        for i in indexes.indices { indexes[i].columns.removeAll { IndexDraft.column(of: $0) == removed } }
+        indexes.removeAll { $0.columns.isEmpty }
+        indexTable.reloadData()
         table.reloadData()
         if !columns.isEmpty { table.selectRowIndexes([min(row, columns.count - 1)], byExtendingSelection: false) }
         update()
@@ -259,7 +329,114 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         update()
     }
 
+    // MARK: Indexes
+
+    private func indexCell(_ tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard let field = tableColumn.flatMap({ IndexField(rawValue: $0.identifier.rawValue) }) else { return nil }
+        let index = indexes[row]
+        switch field {
+        case .kind:
+            let popUp = NSPopUpButton(frame: .zero, pullsDown: false)
+            popUp.controlSize = .small
+            popUp.addItems(withTitles: IndexDraft.Kind.allCases.map(\.rawValue))
+            popUp.selectItem(withTitle: index.kind.rawValue)
+            popUp.target = self
+            popUp.action = #selector(kindChanged(_:))
+            return centered(popUp, fill: true)
+        case .indexName, .indexColumns:
+            let text = NSTextField(string: field == .indexName ? index.name : index.columnsText)
+            text.isBordered = false
+            text.drawsBackground = false
+            text.placeholderString = field == .indexName ? tr("索引名稱（必填）", "Index name (required)") : tr("例如 name, created DESC", "e.g. name, created DESC")
+            text.identifier = NSUserInterfaceItemIdentifier(field.rawValue)
+            text.delegate = self
+            guard field == .indexColumns else { return centered(text, fill: true) }
+            // Beside the columns, a menu of the table's columns to tick in or out.
+            let pick = NSButton(image: NSImage(systemSymbolName: "list.bullet", accessibilityDescription: tr("選擇欄位", "Choose Columns"))!,
+                                target: self, action: #selector(showIndexColumns(_:)))
+            pick.isBordered = false
+            pick.toolTip = tr("選擇欄位", "Choose Columns")
+            pick.setContentHuggingPriority(.required, for: .horizontal)
+            text.setContentHuggingPriority(.init(1), for: .horizontal)
+            return centered(NSStackView(views: [text, pick]), fill: true)
+        }
+    }
+
+    @objc private func kindChanged(_ sender: NSPopUpButton) {
+        let row = indexTable.row(for: sender)
+        guard indexes.indices.contains(row), let kind = sender.titleOfSelectedItem.flatMap(IndexDraft.Kind.init(rawValue:)) else { return }
+        indexes[row].kind = kind
+        update()
+    }
+
+    @objc private func showIndexColumns(_ sender: NSButton) {
+        let row = indexTable.row(for: sender)
+        guard indexes.indices.contains(row) else { return }
+        indexTable.selectRowIndexes([row], byExtendingSelection: false)
+        panel.makeFirstResponder(nil)   // the text typed so far counts
+        let menu = NSMenu()
+        let used = indexes[row].columns.map(IndexDraft.column(of:))
+        for column in columns where !column.name.isEmpty {
+            let item = menu.addItem(withTitle: column.name, action: #selector(toggleIndexColumn(_:)), keyEquivalent: "")
+            item.target = self
+            item.state = used.contains(column.name) ? .on : .off
+            item.tag = row
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
+    }
+
+    /// Adds the column at the end of the index, or takes it out.
+    @objc private func toggleIndexColumn(_ sender: NSMenuItem) {
+        let row = sender.tag
+        guard indexes.indices.contains(row) else { return }
+        if sender.state == .on {
+            indexes[row].columns.removeAll { IndexDraft.column(of: $0) == sender.title }
+        } else {
+            indexes[row].columns.append(sender.title)
+        }
+        indexTable.reloadData(forRowIndexes: [row], columnIndexes: IndexSet(integersIn: 0..<indexTable.numberOfColumns))
+        update()
+    }
+
+    @objc private func addIndex(_ sender: Any?) {
+        // Index names are the database's, not the table's, so the table's name goes in them.
+        let start = columns.indices.contains(table.selectedRow) ? [columns[table.selectedRow].name] : []
+        let base = "idx_" + tableName + (start.first.map { "_" + $0 } ?? "")
+        var name = base, n = 1
+        while indexes.contains(where: { $0.name.lowercased() == name.lowercased() }) { n += 1; name = base + "\(n)" }
+        indexes.append(IndexDraft(name: name, columns: start))
+        indexTable.reloadData()
+        let row = indexes.count - 1
+        indexTable.selectRowIndexes([row], byExtendingSelection: false)
+        indexTable.scrollRowToVisible(row)
+        indexTable.editColumn(0, row: row, with: nil, select: true)
+        update()
+    }
+
+    @objc private func removeIndex(_ sender: Any?) {
+        let row = indexTable.selectedRow
+        guard indexes.indices.contains(row) else { return }
+        indexes.remove(at: row)
+        indexTable.reloadData()
+        if !indexes.isEmpty { indexTable.selectRowIndexes([min(row, indexes.count - 1)], byExtendingSelection: false) }
+        update()
+    }
+
+    /// A column renamed in the grid keeps its place in the indexes.
+    private func renameInIndexes(_ old: String, to new: String) {
+        guard old != new, !old.isEmpty else { return }
+        var changed = false
+        for i in indexes.indices {
+            for j in indexes[i].columns.indices where IndexDraft.column(of: indexes[i].columns[j]) == old {
+                indexes[i].columns[j] = IndexDraft.renaming(indexes[i].columns[j], to: new)
+                changed = true
+            }
+        }
+        if changed { indexTable.reloadData() }
+    }
+
     private func updateButtons() {
+        removeIndexButton?.isEnabled = indexes.indices.contains(indexTable.selectedRow)
         let row = table.selectedRow
         removeButton.isEnabled = row >= 0
         upButton.isEnabled = row > 0
@@ -272,15 +449,15 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private func update() {
         updateButtons()
         let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-        if let problem = TableDesign.problem(name: name, columns: columns) {
+        if let problem = TableDesign.problem(name: name, columns: columns, indexes: indexes) {
             show(sql: "", message: problem, error: true)
             return
         }
         guard let snapshot else {
-            show(sql: TableDesign.createSQL(name: name, columns: columns), message: "", error: false)
+            show(sql: TableDesign.createSQL(name: name, columns: columns, indexes: indexes), message: "", error: false)
             return
         }
-        let change = TableDesign.alterSQL(snapshot, newName: name, columns: columns)
+        let change = TableDesign.alterSQL(snapshot, newName: name, columns: columns, indexes: indexes)
         let unchanged = change.sql.isEmpty
         show(sql: unchanged ? "" : change.sql,
              message: unchanged ? tr("沒有變更。", "Nothing has changed.") : change.warnings.joined(separator: "\n"),
@@ -305,6 +482,12 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         guard sql != nil, saveButton.isEnabled else { return NSSound.beep() }
         NSApp.stopModal(withCode: .OK)
         panel.orderOut(nil)
+    }
+
+    /// The title bar's close button: the same as Cancel.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cancel(sender)
+        return false
     }
 
     @objc private func cancel(_ sender: Any?) {

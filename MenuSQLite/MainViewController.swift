@@ -13,7 +13,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     var onPinChange: ((Bool) -> Void)?
     private var inPinnedWindow: Bool { pinnedWindow != nil && view.window === pinnedWindow }
 
-    private(set) var database: DatabaseConnection?
+    /// The database in the tab showing, if any.
+    var database: DatabaseConnection? { active.map { sessions[$0].database } }
     private var objects: [DatabaseObject] = []
     private var selected: DatabaseObject? { sidebar.selectedRow >= 0 ? objects[sidebar.selectedRow] : nil }
     /// The table the Data and Structure tabs were last loaded for. Reloading the table list
@@ -49,6 +50,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let sidebar = NSTableView()
+    /// The tables on the left, the selected one's rows on the right.
+    private let bodySplit = NSSplitView()
     private let tabs = NSSegmentedControl()
     private let content = NSView()
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
@@ -56,6 +59,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private let filterBar = FilterBar()
     private var dataPane: NSStackView!
     private var filterButton: NSButton!
+    private var columnsButton: NSButton!
+    /// Columns left out of the Data tab, by table, for as long as the app runs. Every column
+    /// shows until some are unticked.
+    private var hiddenColumns: [String: Set<String>] = [:]
     private let queryGrid = Grid()
     private let structureView = NSTextView.scrollableTextView()
     private let editorView = NSTextView.scrollableTextView()
@@ -66,6 +73,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private let statusLabel = NSTextField(labelWithString: "")
     private var pinButton: NSButton!
     private var addRowButton: NSButton!
+    /// Under the Data and SQL tabs: exports every row the filter lets through, in the columns
+    /// showing, or the SQL tab's results.
+    private var exportRowsButton: NSButton!
+    /// Under the Data tab: reads the page showing again, as it is (filter, sort, page).
+    private var reloadRowsButton: NSButton!
     private var deleteRowButton: NSButton!
     private var previousButton: NSButton!
     private var nextButton: NSButton!
@@ -77,6 +89,12 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// Toolbar buttons that act on the open database: Refresh, Export, Info, Structure Document.
     private var databaseButtons: [NSButton] = []
     private var runButton: NSButton!
+    /// Where the SQL tab's ▶︎ stands: blue while running, dark once the SQL has changed, and
+    /// off once it has run, until the SQL changes again (⌘↩ still runs it again from the menu).
+    private enum RunState { case changed, running, done }
+    private var runState = RunState.done {
+        didSet { updateRunButton() }
+    }
     private var localized: [(view: NSView, zh: String, en: String)] = []
     private var escapeMonitor: Any?
     private var sizeAtDragStart = NSSize.zero
@@ -117,6 +135,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let toolbar = NSStackView(views: [
             toolButton("folder", "開啟資料庫（⌘O）", "Open Database (⌘O)", #selector(openDocument(_:))),
+            toolButton("star", "常用資料庫：開啟、加入目前的資料庫、管理", "Favorite Databases: open, add this one, manage",
+                       #selector(showFavoritesMenu(_:))),
             toolButton("clock.arrow.circlepath", "最近開啟的資料庫", "Recent Databases", #selector(showRecentMenu(_:))),
             toolButton("plus.rectangle.on.folder", "新增資料庫（⌘N）", "New Database (⌘N)", #selector(newDocument(_:))),
             toolButton("network", "透過 SSH 連線到伺服器上的資料庫（⇧⌘O）",
@@ -138,7 +158,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         header.spacing = 6
         header.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 8, right: 8)
 
-        let body = NSSplitView()
+        let body = bodySplit
         body.isVertical = true
         body.dividerStyle = .thin
         body.addArrangedSubview(makeSidebar())
@@ -150,7 +170,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let topLine = NSBox(), bottomLine = NSBox()
         topLine.boxType = .separator
         bottomLine.boxType = .separator
-        let column = NSStackView(views: [header, topLine, body, bottomLine, footer])
+        tabStrip.spacing = 4
+        tabStrip.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 6, right: 10)
+        tabStrip.setHuggingPriority(.required, for: .vertical)
+        tabStrip.isHidden = true
+        let column = NSStackView(views: [header, tabStrip, topLine, body, bottomLine, footer])
         column.orientation = .vertical
         column.distribution = .fill   // fill the window top to bottom
         column.spacing = 0
@@ -162,6 +186,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             column.topAnchor.constraint(equalTo: root.topAnchor),
             column.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             header.widthAnchor.constraint(equalTo: column.widthAnchor),
+            tabStrip.widthAnchor.constraint(equalTo: column.widthAnchor),
             toolbar.widthAnchor.constraint(equalTo: header.widthAnchor, constant: -20),
             body.widthAnchor.constraint(equalTo: column.widthAnchor),
             footer.widthAnchor.constraint(equalTo: column.widthAnchor),
@@ -186,6 +211,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         showTab()
         updateFooter()
         updateTableButtons()   // nothing open yet: the database's buttons start off
+        updateRunButton()
         body.setPosition(190, ofDividerAt: 0)
     }
 
@@ -195,6 +221,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         sidebar.addTableColumn(column)
         sidebar.headerView = nil
         sidebar.style = .sourceList
+        // Its one column fills the list, however wide it's made; otherwise it stays at its
+        // starting width and long names are cut short.
+        sidebar.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         sidebar.rowHeight = 22
         sidebar.dataSource = self
         sidebar.delegate = self
@@ -285,15 +314,19 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         sqlText.isAutomaticTextReplacementEnabled = false
         sqlText.isContinuousSpellCheckingEnabled = false
         sqlText.textContainerInset = NSSize(width: 6, height: 8)
-        runButton = NSButton(title: "", target: self, action: #selector(runQuery(_:)))
-        runButton.bezelStyle = .rounded
+        // An icon at the right end; its color says whether there's something new to run.
+        runButton = toolButton("play.fill", "執行（⌘↩）", "Run (⌘↩)", #selector(runQuery(_:)))
         runButton.keyEquivalent = "\r"
         runButton.keyEquivalentModifierMask = .command
         let runHint = NSTextField(labelWithString: "")
         runHint.textColor = .secondaryLabelColor
         runHint.font = .systemFont(ofSize: 11)
-        localized.append((runHint, "執行選取的語句，沒有選取就執行全部", "Runs the selection, or everything if nothing is selected"))
-        let runBar = NSStackView(views: [runButton, runHint, NSView()])
+        runHint.lineBreakMode = .byTruncatingTail
+        runHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        localized.append((runHint, "⌘↩ 執行選取的語句，沒有選取就執行全部", "⌘↩ runs the selection, or everything if nothing is selected"))
+        let runSpacer = NSView()
+        runSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let runBar = NSStackView(views: [runHint, runSpacer, runButton])
         runBar.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
         let editorPane = NSStackView(views: [editorView, runBar])
         editorPane.orientation = .vertical
@@ -324,7 +357,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                                   #selector(toggleFilter(_:)))
         let tabSpacer = NSView()
         tabSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let tabBar = NSStackView(views: [tabs, tabSpacer, filterButton])
+        columnsButton = toolButton("checklist", "選擇要顯示的欄位（⌥⌘K）", "Choose the Columns to Show (⌥⌘K)", #selector(showColumnsMenu(_:)))
+        let tabBar = NSStackView(views: [tabs, tabSpacer, columnsButton, filterButton])
         tabBar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         tabBar.setHuggingPriority(.required, for: .vertical)   // its own height; the content takes the rest
         let detail = NSStackView(views: [tabBar, content])
@@ -346,6 +380,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addRowButton = smallButton("plus", "新增一列", "Add a Row", #selector(addRow(_:)))
         deleteRowButton = smallButton("minus", "刪除選取的資料列", "Delete Selected Rows", #selector(deleteRows(_:)))
+        reloadRowsButton = smallButton("arrow.clockwise", "重新載入這一頁的資料（篩選、排序和頁數不變）",
+                                       "Reload the Rows Showing (the filter, sort and page stay)", #selector(reloadRows(_:)))
+        exportRowsButton = smallButton("square.and.arrow.up", "匯出 CSV：資料分頁依目前的篩選、排序和顯示的欄位匯出全部符合的資料列（不限 200 列）；SQL 分頁匯出查詢結果（自動帶入的 SELECT 不限 100 列）",
+                                       "Export CSV: on the Data tab, every row the filter lets through, sorted as shown, in the columns showing (not just 200); on the SQL tab, the query’s results (the SELECT written for you without its LIMIT 100)",
+                                       #selector(exportRows(_:)))
         previousButton = smallButton("chevron.left", "上一頁", "Previous Page", #selector(previousPage(_:)))
         nextButton = smallButton("chevron.right", "下一頁", "Next Page", #selector(nextPage(_:)))
         let grip = ResizeGrip()
@@ -363,7 +402,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         pageDivider = divider()
-        let footer = NSStackView(views: [statusLabel, spacer, addRowButton, deleteRowButton, pageDivider,
+        let footer = NSStackView(views: [statusLabel, spacer, reloadRowsButton, exportRowsButton, addRowButton, deleteRowButton, pageDivider,
                                          previousButton, nextButton, grip])
         footer.spacing = 4
         footer.edgeInsets = NSEdgeInsets(top: 4, left: 12, bottom: 6, right: 12)
@@ -412,7 +451,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         tabs.setLabel(tr("資料", "Data"), forSegment: 0)
         tabs.setLabel(tr("結構", "Structure"), forSegment: 1)
         tabs.setLabel("SQL", forSegment: 2)
-        runButton.title = tr("執行 ⌘↩", "Run ⌘↩")
         updateTitle()
         updateFooter()
         filterBar.applyLanguage()
@@ -470,19 +508,238 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
+    /// Shows a database just opened, in a tab of its own, from its first table.
     private func show(_ database: DatabaseConnection) {
         _ = view   // reopening at launch comes before the window: the table list must exist
-        self.database = database
+        // A tab of its own, starting fresh: no SQL of its own yet, nothing run.
+        saveSession()
+        sessions.append(Session(database))
+        active = sessions.count - 1
+        editor.string = ""
+        matchingSQL = nil
+        message = nil
+        runState = .done
         shown = nil   // a table of the same name in another database is another table
         addRecent(database.recentKey)
         sort = nil
         offset = 0
         reloadObjects()
+        fitSidebar()
         queryGrid.show(ResultSet())
         ranMatchingSQL = nil
         matchQueryToData()
         updateTitle()
+        rebuildTabs()
         focus()
+    }
+
+    /// Closes the active tab and its database.
+    @objc func closeDatabase(_ sender: Any?) {
+        guard let active else { return NSSound.beep() }
+        closeSession(active)
+    }
+
+    // MARK: - Database tabs
+
+    /// One open database and how its tab was left: the table and tab showing, the page,
+    /// sort and filter, and the SQL tab's statement and results.
+    private final class Session {
+        let database: DatabaseConnection
+        var selected: String?
+        var tab = Tab.data
+        var offset = 0
+        var sort: (column: String, ascending: Bool)?
+        var filter: [FilterBar.Saved] = []
+        var sql = ""
+        var matchingSQL: String?
+        var ranMatchingSQL: String?
+        var results = ResultSet()
+        var message: (text: String, error: Bool)?
+        var runState = RunState.done
+
+        init(_ database: DatabaseConnection) { self.database = database }
+    }
+
+    private var sessions: [Session] = []
+    private var active: Int?
+    /// The tabs, one per open database, under the toolbar.
+    private let tabStrip = NSStackView()
+
+    /// Keeps how the active tab looks, before another is shown.
+    private func saveSession() {
+        guard let active, sessions.indices.contains(active) else { return }
+        let session = sessions[active]
+        session.selected = selected?.name
+        session.tab = tab
+        session.offset = offset
+        session.sort = sort
+        session.filter = filterBar.saved
+        session.sql = editor.string
+        session.matchingSQL = matchingSQL
+        session.ranMatchingSQL = ranMatchingSQL
+        session.results = queryGrid.result
+        session.message = message
+        session.runState = runState
+    }
+
+    /// Shows the active tab as it was left. The table list and rows are read again, so they're
+    /// up to date; the SQL tab's results are the ones it had.
+    private func restoreSession() {
+        guard let active, let database else { return clearConnection() }
+        let session = sessions[active]
+        objects = (try? database.objects()) ?? []
+        sidebar.reloadData()
+        let index = session.selected.flatMap { name in objects.firstIndex { $0.name == name } } ?? (objects.isEmpty ? nil : 0)
+        // Marked as shown first, so selecting its row doesn't count as choosing a new table.
+        shown = index.map { objects[$0] }
+        if let index {
+            sidebar.selectRowIndexes([index], byExtendingSelection: false)
+            sidebar.scrollRowToVisible(index)
+        } else {
+            sidebar.deselectAll(nil)
+        }
+        filterBar.reset(columns: selectedColumns)
+        if let shown, shown.name == session.selected {
+            filterBar.restore(session.filter)
+            sort = session.sort
+            offset = session.offset
+        } else {
+            sort = nil
+            offset = 0
+        }
+        updateFilterButton()
+        dataGrid.hiddenColumns = hiddenColumns[columnsKey] ?? []
+        updateColumnsButton()
+        updateTableButtons()
+        loadPage()
+        loadStructure()
+        editor.string = session.sql
+        matchingSQL = session.matchingSQL
+        ranMatchingSQL = session.ranMatchingSQL
+        highlightSQL()
+        queryGrid.show(session.results)
+        message = session.message
+        runState = session.runState
+        tab = session.tab
+        updateTitle()
+        rebuildTabs()
+        focus()
+    }
+
+    /// The screen with no database: after the last tab is closed.
+    private func clearConnection() {
+        shown = nil
+        reloadObjects()
+        queryGrid.show(ResultSet())
+        editor.string = ""
+        matchingSQL = nil
+        ranMatchingSQL = nil
+        message = nil
+        updateTitle()
+        runState = .done
+        rebuildTabs()
+        showTab()
+    }
+
+    private func switchToSession(_ index: Int) {
+        guard sessions.indices.contains(index), index != active else { return }
+        saveSession()
+        active = index
+        restoreSession()
+    }
+
+    /// Closes a tab and its database; the tab beside it shows instead.
+    private func closeSession(_ index: Int) {
+        guard sessions.indices.contains(index), let current = active else { return }
+        sessions.remove(at: index)
+        if sessions.isEmpty {
+            active = nil
+            return clearConnection()
+        }
+        if index == current {
+            active = min(index, sessions.count - 1)
+            restoreSession()
+        } else {
+            if index < current { active = current - 1 }
+            rebuildTabs()
+        }
+    }
+
+    @objc private func closeTab(_ sender: NSButton) {
+        closeSession(sender.tag)
+    }
+
+    @objc func nextTab(_ sender: Any?) {
+        guard let active, sessions.count > 1 else { return NSSound.beep() }
+        switchToSession((active + 1) % sessions.count)
+    }
+
+    @objc func previousTab(_ sender: Any?) {
+        guard let active, sessions.count > 1 else { return NSSound.beep() }
+        switchToSession((active + sessions.count - 1) % sessions.count)
+    }
+
+    /// One tab per database: its name, and × to close it; then ＋ for another.
+    private func rebuildTabs() {
+        for view in tabStrip.arrangedSubviews { view.removeFromSuperview() }
+        tabStrip.isHidden = sessions.isEmpty
+        guard !sessions.isEmpty else { return }
+        for (i, session) in sessions.enumerated() {
+            tabStrip.addArrangedSubview(tabView(i, session))
+        }
+        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: tr("開啟資料庫", "Open Database"))!
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))!, target: self, action: #selector(openDocument(_:)))
+        add.isBordered = false
+        add.contentTintColor = .secondaryLabelColor
+        add.toolTip = tr("在新的標籤頁開啟資料庫（⌘O）", "Open a Database in a New Tab (⌘O)")
+        add.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        tabStrip.addArrangedSubview(add)
+        tabStrip.addArrangedSubview(spacer)
+    }
+
+    private func tabView(_ index: Int, _ session: Session) -> NSView {
+        let isActive = index == active
+        let database = session.database
+        // A favorite's name when the database is one; else the file's name (where it is shows on
+        // hovering). Tabs on the same database are told apart by a number, from the second on.
+        let name = Favorites.matching(database.recentKey)?.name ?? database.name
+        let twin = sessions[..<index].filter { $0.database.recentKey == database.recentKey }.count
+        // A label, not a button, so the tab itself takes the mouse: a click picks it, a drag moves it.
+        let title = NSTextField(labelWithString: name + (twin > 0 ? " (\(twin + 1))" : ""))
+        title.font = .systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+        title.textColor = isActive ? .labelColor : .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingMiddle
+        title.setContentCompressionResistancePriority(.init(200), for: .horizontal)
+        var views: [NSView] = [title]
+        if database is RemoteDatabase {
+            let lock = NSImageView(image: NSImage(systemSymbolName: "network", accessibilityDescription: "SSH")!
+                .withSymbolConfiguration(.init(pointSize: 10, weight: .regular))!)
+            lock.contentTintColor = title.textColor
+            views.insert(lock, at: 0)
+        }
+        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: tr("關閉", "Close"))!
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))!, target: self, action: #selector(closeTab(_:)))
+        close.isBordered = false
+        close.tag = index
+        close.contentTintColor = .secondaryLabelColor
+        close.toolTip = tr("關閉這個資料庫的標籤頁", "Close This Database’s Tab")
+        close.setContentHuggingPriority(.required, for: .horizontal)
+        let chip = TabChip(views: views + [close], active: isActive)
+        chip.toolTip = database.location + tr("（拖曳可調整順序）", " (drag to reorder)")
+        chip.onSelect = { [weak self] in self?.switchToSession(index) }
+        chip.onMove = { [weak self] from, to in self?.moveSession(from: from, to: to) }
+        return chip
+    }
+
+    /// A tab dragged to another place: the databases take the new order, the same one showing.
+    private func moveSession(from: Int, to: Int) {
+        guard sessions.indices.contains(from), sessions.indices.contains(to), from != to else { return rebuildTabs() }
+        let showing = active.map { sessions[$0] }
+        sessions.insert(sessions.remove(at: from), at: to)
+        active = showing.flatMap { session in sessions.firstIndex { $0 === session } }
+        rebuildTabs()
     }
 
     /// Reopens the database used last, so the window comes back as it was left. Not one on a
@@ -579,7 +836,79 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     @objc private func openRecent(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String else { return }
+        open(key: key)
+    }
+
+    /// Opens a database by how the recent list and favorites keep it: a path, or a server's key.
+    func open(key: String) {
         if let remote = RemoteLocation(key: key) { open(remote) } else { open(URL(fileURLWithPath: key)) }
+    }
+
+    // MARK: Favorite databases
+
+    /// The favorites, to open one; then adding the database open now, and managing them.
+    @objc func showFavoritesMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let favorites = Favorites.all
+        for favorite in favorites {
+            let item = NSMenuItem(title: favorite.name, action: #selector(openFavorite(_:)), keyEquivalent: "")
+            item.toolTip = favorite.summary
+            item.representedObject = favorite.id.uuidString
+            item.target = self
+            item.image = NSImage(systemSymbolName: favorite.remote == nil ? "star" : "network", accessibilityDescription: nil)
+            if favorite.key == database?.recentKey { item.state = .on }
+            menu.addItem(item)
+        }
+        if favorites.isEmpty {
+            let none = NSMenuItem(title: tr("還沒有常用資料庫", "No Favorite Databases Yet"), action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        }
+        menu.addItem(.separator())
+        add(menu, tr("將目前的資料庫加入常用資料庫…", "Add This Database to Favorites…"), #selector(addToFavorites(_:)), key: "d")
+        add(menu, tr("管理常用資料庫…", "Manage Favorite Databases…"), #selector(manageFavorites(_:)))
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc private func openFavorite(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let favorite = Favorites.all.first(where: { $0.id.uuidString == id }) else { return }
+        open(key: favorite.key)
+    }
+
+    /// Keeps the database open now under a name.
+    @objc func addToFavorites(_ sender: Any?) {
+        guard let database else { return NSSound.beep() }
+        let key = database.recentKey
+        if let existing = Favorites.matching(key) {
+            let alert = NSAlert()
+            alert.messageText = tr("已經在常用資料庫裡了", "Already a Favorite")
+            alert.informativeText = tr("這個資料庫已經存成「\(existing.name)」。", "This database is saved as “\(existing.name)”.")
+            keepingPopoverOpen { _ = alert.runModal() }
+            return
+        }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = Favorites.suggestedName(for: key)
+        let alert = NSAlert()
+        alert.messageText = tr("加入常用資料庫", "Add to Favorites")
+        alert.informativeText = tr("記住 \(database.location)，之後從星號選單一鍵開啟。名稱：",
+                                   "Remembers \(database.location), to open from the star menu later. Name:")
+        alert.accessoryView = field
+        alert.addButton(withTitle: tr("加入", "Add"))
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        alert.window.initialFirstResponder = field
+        guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        Favorites.all.append(Favorite(name: name.isEmpty ? Favorites.suggestedName(for: key) : name, key: key))
+        rebuildTabs()   // the tab now goes by the favorite's name
+        showNotice(tr("已加入常用資料庫", "Added to favorites"))
+    }
+
+    @objc func manageFavorites(_ sender: Any?) {
+        let window = FavoritesWindow()
+        keepingPopoverOpen { window.run() }
+        rebuildTabs()   // names may have changed
+        if let favorite = window.chosen { open(key: favorite.key) }
     }
 
     @objc private func clearRecent(_ sender: Any?) {
@@ -611,6 +940,20 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         if index == nil || selected != shown { selectionChanged() }
     }
 
+    /// Widens the list (or narrows it back) so the longest table or view name shows whole,
+    /// keeping at least half the window for the rows. Done when a database is opened, so a width
+    /// dragged by hand stays through refreshes.
+    private func fitSidebar() {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let longest = objects.map { ($0.name as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+        // The icon and the gaps around it, the source list's insets, and room for a scroller.
+        let wanted = ceil(longest) + 16 + 6 + 4 + 36 + 16
+        let width = min(max(wanted, 190), max(190, bodySplit.bounds.width * 0.5))
+        bodySplit.setPosition(width, ofDividerAt: 0)
+        bodySplit.layoutSubtreeIfNeeded()
+        sidebar.sizeLastColumnToFit()
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int { objects.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -640,7 +983,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         cell.textField?.stringValue = object.name
         cell.imageView?.image = NSImage(systemSymbolName: object.kind == .table ? "tablecells" : "eye",
                                         accessibilityDescription: object.kind == .table ? tr("資料表", "Table") : tr("視圖", "View"))
-        cell.toolTip = object.kind == .view ? tr("視圖（唯讀）", "View (read-only)") : nil
+        // The whole name, for when the list is still too narrow for it.
+        cell.toolTip = object.name + (object.kind == .view ? tr("（視圖，唯讀）", " (view, read-only)") : "")
         return cell
     }
 
@@ -656,8 +1000,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         offset = 0
         filterBar.reset(columns: selectedColumns)
         updateFilterButton()
-        matchQueryToData()
+        dataGrid.hiddenColumns = hiddenColumns[columnsKey] ?? []
+        updateColumnsButton()
         loadPage()
+        matchQueryToData()   // after the page, whose columns the SELECT may list
         loadStructure()
         showTab()
     }
@@ -847,8 +1193,92 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         updateFilterButton()
     }
 
+    // MARK: Columns shown
+
+    /// Where the selected table's hidden columns are kept: the database file and the table.
+    private var columnsKey: String {
+        [database?.recentKey ?? "", selected?.name ?? ""].joined(separator: "\u{0}")
+    }
+
+    /// The columns showing on the Data tab, in order, when some are hidden; nil when all show.
+    private var shownColumns: [String]? {
+        let hidden = dataGrid.hiddenColumns
+        let columns = dataGrid.result.columns
+        guard !hidden.isEmpty, columns.contains(where: hidden.contains) else { return nil }
+        return columns.filter { !hidden.contains($0) }
+    }
+
+    /// A menu of the table's columns, each with a checkbox. Ticking one shows it at once and
+    /// the menu stays open, so several can be changed in one go.
+    @objc func showColumnsMenu(_ sender: Any?) {
+        guard selected != nil, !dataGrid.result.columns.isEmpty else { return NSSound.beep() }
+        if tab != .data { tab = .data }
+        let menu = NSMenu()
+        let all = menu.addItem(withTitle: tr("全部顯示", "Show All"), action: #selector(showAllColumns(_:)), keyEquivalent: "")
+        all.target = self
+        all.isEnabled = !dataGrid.hiddenColumns.isEmpty
+        menu.addItem(.separator())
+        let names = dataGrid.result.columns
+        let font = NSFont.menuFont(ofSize: 0)
+        let width = max(180, (names.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) + 60)
+        for name in names {
+            let box = NSButton(checkboxWithTitle: name, target: self, action: #selector(toggleColumn(_:)))
+            box.state = dataGrid.hiddenColumns.contains(name) ? .off : .on
+            box.font = font
+            box.frame = NSRect(x: 14, y: 2, width: width - 20, height: 20)
+            let holder = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 24))
+            holder.addSubview(box)
+            let item = NSMenuItem()
+            item.view = holder
+            menu.addItem(item)
+        }
+        menu.allowsContextMenuPlugIns = false
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: columnsButton.bounds.height + 4), in: columnsButton)
+    }
+
+    @objc private func toggleColumn(_ sender: NSButton) {
+        var hidden = dataGrid.hiddenColumns
+        if sender.state == .on {
+            hidden.remove(sender.title)
+        } else {
+            // One column at least stays, or there'd be nothing to see the rows by.
+            guard dataGrid.result.columns.contains(where: { $0 != sender.title && !hidden.contains($0) }) else {
+                sender.state = .on
+                return NSSound.beep()
+            }
+            hidden.insert(sender.title)
+        }
+        setHiddenColumns(hidden)
+    }
+
+    @objc private func showAllColumns(_ sender: Any?) {
+        setHiddenColumns([])
+    }
+
+    private func setHiddenColumns(_ hidden: Set<String>) {
+        dataGrid.hiddenColumns = hidden
+        hiddenColumns[columnsKey] = hidden.isEmpty ? nil : hidden
+        updateColumnsButton()
+        updateFooter()
+        matchQueryToData()
+    }
+
+    private func updateColumnsButton() {
+        columnsButton.contentTintColor = dataGrid.hiddenColumns.isEmpty ? .secondaryLabelColor : .controlAccentColor
+    }
+
     private func updateFilterButton() {
         filterButton.contentTintColor = filterBar.isShowing ? .controlAccentColor : .secondaryLabelColor
+    }
+
+    /// Reads the rows showing again (another program, or the SQL tab, may have changed them),
+    /// keeping the filter, sort, page and selection; then says so for a moment.
+    @objc func reloadRows(_ sender: Any?) {
+        guard selected != nil else { return NSSound.beep() }
+        let selection = dataGrid.tableView.selectedRowIndexes
+        loadPage()
+        dataGrid.tableView.selectRowIndexes(selection.filteredIndexSet { $0 < dataGrid.tableView.numberOfRows }, byExtendingSelection: false)
+        showNotice(tr("已重新載入", "Reloaded"))
     }
 
     @objc func previousPage(_ sender: Any?) {
@@ -927,19 +1357,25 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Writes the Data tab's table, filter and sort into the SQL tab as a SELECT, unless the SQL
     /// there is someone's own. With no table chosen yet, it starts from the first.
+    /// What ends the SELECT written to match the Data tab, to keep the SQL tab quick; exporting
+    /// it takes it off.
+    private static let matchingLimit = "\nLIMIT 100;"
+
     private func matchQueryToData() {
         guard let object = selected ?? objects.first,
               editor.string.isEmpty || editor.string == matchingSQL else { return }
-        var sql = "SELECT * FROM \(Database.quote(object.name))"
+        let list = object == selected ? shownColumns.map { $0.map(Database.quote).joined(separator: ", ") } : nil
+        var sql = "SELECT \(list ?? "*") FROM \(Database.quote(object.name))"
         if object == selected, let filter = filterBar.condition {
             sql += "\nWHERE " + Database.inline(filter.bindings, into: filter.sql)
         }
         if object == selected, let sort {
             sql += "\nORDER BY \(Database.quote(sort.column)) \(sort.ascending ? "ASC" : "DESC")"
         }
-        sql += "\nLIMIT 100;"
+        sql += Self.matchingLimit
         guard sql != editor.string else { return }
         editor.string = sql
+        runState = .changed
         matchingSQL = sql
         highlightSQL()
     }
@@ -950,6 +1386,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let selection = editor.selectedRange()
         let sql = selection.length > 0 ? (editor.string as NSString).substring(with: selection) : editor.string
         guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return NSSound.beep() }
+        // The statement holds this thread, so the blue has to be drawn before it starts.
+        runState = .running
+        runButton.display()
+        CATransaction.flush()   // layers reach the screen when the run loop turns, which it won't till the end
+        defer { runState = .done }
         let start = Date()
         do {
             let result = try database.run(sql)
@@ -973,6 +1414,23 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     func textDidChange(_ notification: Notification) {
         guard notification.object as AnyObject === editor else { return }
         highlightSQL()
+        runState = .changed
+        updateFooter()   // whether there's something to export may have changed
+    }
+
+    private func updateRunButton() {
+        guard let runButton else { return }
+        switch runState {
+        case .running:
+            runButton.isEnabled = true
+            runButton.contentTintColor = .controlAccentColor
+        case .changed:
+            runButton.isEnabled = database != nil
+            runButton.contentTintColor = .labelColor
+        case .done:
+            runButton.isEnabled = false
+            runButton.contentTintColor = .tertiaryLabelColor
+        }
     }
 
     private func highlightSQL() {
@@ -999,6 +1457,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let hasTable = selected != nil
         dataPane.isHidden = tab != .data || !hasTable
         filterButton.isHidden = dataPane.isHidden
+        columnsButton.isHidden = dataPane.isHidden
         structureView.isHidden = tab != .structure || !hasTable
         querySplit.isHidden = tab != .query || database == nil
         emptyLabel.isHidden = !(dataPane.isHidden && structureView.isHidden && querySplit.isHidden)
@@ -1050,6 +1509,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         guard isViewLoaded else { return }
         let paging = tab == .data && selected != nil
         for view in [previousButton, nextButton, pageDivider] { view?.isHidden = !paging }
+        reloadRowsButton.isHidden = !paging
+        exportRowsButton.isHidden = tab == .query ? queryExport == nil : !paging || total == 0
         addRowButton.isHidden = !paging || !dataGrid.editable
         deleteRowButton.isHidden = addRowButton.isHidden
         previousButton.isEnabled = offset > 0
@@ -1064,6 +1525,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                 ? (filtered ? tr("沒有符合的資料", "No matching rows") : tr("沒有資料", "No rows"))
                 : tr("第 \(offset + 1)–\(offset + shown) 列，共 \(total) 列", "Rows \(offset + 1)–\(offset + shown) of \(total)")
                     + (filtered ? tr("（已篩選）", " (filtered)") : ""))
+                + (shownColumns.map { shown in
+                    let n = dataGrid.result.columns.count - shown.count
+                    return tr("，隱藏 \(n) 欄", ", \(n) column\(n == 1 ? "" : "s") hidden")
+                } ?? "")
                 + (dataGrid.editable || selected?.kind == .view ? "" : tr("（唯讀）", " (read-only)"))
             statusLabel.textColor = .secondaryLabelColor
         } else {
@@ -1152,6 +1617,86 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
         do {
             try CSV.data(result).write(to: url, options: .atomic)
+        } catch {
+            showError(tr("無法匯出", "Couldn’t export"), error)
+        }
+    }
+
+    /// The SELECT for everything the Data tab shows, not just the page: its filter, its sort and
+    /// the columns showing.
+    var dataQuery: (sql: String, bindings: [Value])? {
+        guard let object = selected else { return nil }
+        let list = shownColumns.map { $0.map(Database.quote).joined(separator: ", ") } ?? "*"
+        var sql = "SELECT \(list) FROM \(Database.quote(object.name))"
+        let filter = filterBar.condition
+        if let filter { sql += " WHERE " + filter.sql }
+        if let sort { sql += " ORDER BY \(Database.quote(sort.column)) \(sort.ascending ? "ASC" : "DESC")" }
+        return (sql, filter?.bindings ?? [])
+    }
+
+    /// Exports what the Data tab shows, in full: every row the filter lets through, in its sort
+    /// and the columns showing, rather than the page of 200.
+    @objc func exportRows(_ sender: Any?) {
+        if tab == .query { return exportQuery() }
+        guard let database, let object = selected, let query = dataQuery else { return NSSound.beep() }
+        let filter = filterBar.condition
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = object.name + (filter != nil ? tr("（已篩選）", " (filtered)") : "") + ".csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.canCreateDirectories = true
+        guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
+        do {
+            let result = try database.run(query.sql, query.bindings)
+            try CSV.data(result).write(to: url, options: .atomic)
+            showNotice(tr("已匯出 \(result.rows.count) 列到「\(url.lastPathComponent)」",
+                          "Exported \(result.rows.count) row\(result.rows.count == 1 ? "" : "s") to “\(url.lastPathComponent)”"))
+        } catch {
+            showError(tr("無法匯出", "Couldn’t export"), error)
+        }
+    }
+
+    /// What the SQL tab's export button writes: the SELECT written to match the Data tab, run
+    /// again without its LIMIT; or else the results showing, as they are. Someone's own SQL isn't
+    /// run again for it, since it may change data.
+    private enum QueryExport {
+        case matching(sql: String)
+        case results(ResultSet)
+    }
+
+    private var queryExport: QueryExport? {
+        guard database != nil else { return nil }
+        if let sql = matchingSQL, editor.string == sql, sql.hasSuffix(Self.matchingLimit) {
+            return .matching(sql: String(sql.dropLast(Self.matchingLimit.count)))
+        }
+        return queryGrid.result.columns.isEmpty ? nil : .results(queryGrid.result)
+    }
+
+    /// The rows the SQL tab's export writes.
+    func queryExportResult() throws -> ResultSet? {
+        guard let database, let export = queryExport else { return nil }
+        switch export {
+        case .matching(let sql): return try database.run(sql)
+        case .results(let shown): return shown
+        }
+    }
+
+    private func exportQuery() {
+        guard database != nil, let export = queryExport else { return NSSound.beep() }
+        let panel = NSSavePanel()
+        if case .matching = export, let object = selected {
+            panel.nameFieldStringValue = object.name + (filterBar.condition != nil ? tr("（已篩選）", " (filtered)") : "") + ".csv"
+        } else {
+            panel.nameFieldStringValue = tr("查詢結果", "Query Results") + ".csv"
+        }
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.canCreateDirectories = true
+        guard keepingPopoverOpen({ panel.runModal() }) == .OK, let url = panel.url else { return }
+        do {
+            guard let result = try queryExportResult() else { return NSSound.beep() }
+            try CSV.data(result).write(to: url, options: .atomic)
+            showStatus(tr("已匯出 \(result.rows.count) 列到「\(url.lastPathComponent)」",
+                          "Exported \(result.rows.count) row\(result.rows.count == 1 ? "" : "s") to “\(url.lastPathComponent)”"))
         } catch {
             showError(tr("無法匯出", "Couldn’t export"), error)
         }
@@ -1284,6 +1829,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         add(menu, tr("開啟資料庫…", "Open Database…"), #selector(openDocument(_:)), key: "o")
         add(menu, tr("新增資料庫…", "New Database…"), #selector(newDocument(_:)), key: "n")
         add(menu, tr("連線到伺服器上的資料庫…", "Open a Database on a Server…"), #selector(connectRemote(_:)), key: "O")
+        add(menu, tr("將目前的資料庫加入常用資料庫…", "Add This Database to Favorites…"), #selector(addToFavorites(_:)), key: "d")
+        add(menu, tr("管理常用資料庫…", "Manage Favorite Databases…"), #selector(manageFavorites(_:)))
+        add(menu, tr("關閉標籤頁", "Close Tab"), #selector(closeDatabase(_:)), key: "w").keyEquivalentModifierMask = [.command, .option]
         add(menu, tr("資料庫資訊…", "Database Info…"), #selector(showDatabaseInfo(_:)), key: "i")
         add(menu, tr("匯入 CSV…", "Import CSV…"), #selector(importCSV(_:)), key: "I")
         add(menu, tr("匯出 CSV…", "Export CSV…"), #selector(exportCSV(_:)), key: "E")
@@ -1469,10 +2017,15 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showDatabaseInfo(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)):
+        case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showDatabaseInfo(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)),
+             #selector(addToFavorites(_:)):
             return database != nil
-        case #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)):
+        case #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)), #selector(showColumnsMenu(_:)):
             return selected != nil
+        case #selector(nextTab(_:)), #selector(previousTab(_:)):
+            return sessions.count > 1
+        case #selector(closeDatabase(_:)):
+            return database != nil
         case #selector(toggleShowInDock(_:)):
             return !Presence.showInDock || Presence.showInMenuBar
         case #selector(toggleShowInMenuBar(_:)):
@@ -1490,5 +2043,72 @@ extension MainViewController: NSMenuItemValidation {
         default:
             return true
         }
+    }
+}
+
+/// A tab in the strip under the toolbar: its title and close button on a rounded background,
+/// tinted for the tab showing, as wide as its title needs up to a limit.
+private final class TabChip: NSView {
+    private let active: Bool
+
+    init(views: [NSView], active: Bool) {
+        self.active = active
+        super.init(frame: .zero)
+        let row = NSStackView(views: views)
+        row.spacing = 4
+        row.edgeInsets = NSEdgeInsets(top: 3, left: 10, bottom: 3, right: 6)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+        ])
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.init(200), for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        (active ? NSColor.controlAccentColor.withAlphaComponent(0.25) : NSColor.quaternaryLabelColor).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+    }
+
+    /// A click on the tab shows it.
+    var onSelect: (() -> Void)?
+    /// The tab dragged from one place among the tabs to another, by their order in the strip.
+    var onMove: ((_ from: Int, _ to: Int) -> Void)?
+
+    /// Follows the mouse: a click picks the tab; once it moves a few points, the tab is dragged
+    /// along the strip, the others making way as it passes their middles, and dropped where it is.
+    override func mouseDown(with event: NSEvent) {
+        guard let strip = superview as? NSStackView, let window else { return }
+        let tabs = { strip.arrangedSubviews.filter { $0 is TabChip } }
+        guard let from = tabs().firstIndex(of: self) else { return }
+        let start = event.locationInWindow
+        var dragging = false
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), next.type == .leftMouseDragged {
+            if !dragging {
+                guard abs(next.locationInWindow.x - start.x) > 4 else { continue }
+                dragging = true
+                alphaValue = 0.7
+                NSCursor.closedHand.push()
+            }
+            let x = strip.convert(next.locationInWindow, from: nil).x
+            let others = tabs().filter { $0 !== self }
+            let target = others.firstIndex { x < $0.frame.midX } ?? others.count
+            if tabs().firstIndex(of: self) != target {
+                strip.removeArrangedSubview(self)
+                strip.insertArrangedSubview(self, at: target)   // the tabs come first in the strip
+                strip.layoutSubtreeIfNeeded()
+            }
+        }
+        guard dragging else { return onSelect?() ?? () }
+        alphaValue = 1
+        NSCursor.pop()
+        onMove?(from, tabs().firstIndex(of: self) ?? from)
     }
 }

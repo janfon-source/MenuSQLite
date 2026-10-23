@@ -14,16 +14,69 @@ struct ColumnDraft: Equatable {
     var original: String?
 }
 
+/// An index made with CREATE INDEX, as the table editor shows it: its name, whether it's unique,
+/// and its columns, each written as in SQL, maybe with an order or a collation: `name`,
+/// `created DESC`, `title COLLATE NOCASE`. `original` is its name before editing; nil for a new one.
+struct IndexDraft: Equatable {
+    enum Kind: String, CaseIterable { case index = "INDEX", unique = "UNIQUE" }
+    var name = ""
+    var kind = Kind.index
+    var columns: [String] = []
+    var original: String?
+
+    /// The column a part names: what comes before an order or a collation, without quotes.
+    static func column(of part: String) -> String {
+        let name = part.trimmingCharacters(in: .whitespaces).prefix { $0 != "(" && $0 != " " }
+        if name.count >= 2, let first = name.first, first == name.last, first == "\"" || first == "`" {
+            return String(name.dropFirst().dropLast())
+        }
+        return String(name)
+    }
+
+    /// The part with its column called something else, the rest kept.
+    static func renaming(_ part: String, to name: String) -> String {
+        let text = part.trimmingCharacters(in: .whitespaces)
+        return name + text.dropFirst(text.prefix { $0 != "(" && $0 != " " }.count)
+    }
+
+    /// The columns as text, for the editor's field: name, created DESC
+    var columnsText: String { columns.joined(separator: ", ") }
+
+    /// The columns from the editor's field, split at commas outside parentheses.
+    static func columns(from text: String) -> [String] {
+        var parts: [String] = [], current = "", depth = 0
+        for character in text {
+            if character == "(" { depth += 1 } else if character == ")" { depth -= 1 }
+            if character == ",", depth == 0 { parts.append(current); current = "" } else { current.append(character) }
+        }
+        parts.append(current)
+        return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// CREATE [UNIQUE] INDEX "name" ON "table" ("a", "b" DESC);
+    func createSQL(on table: String) -> String {
+        let parts = columns.map { part -> String in
+            let text = part.trimmingCharacters(in: .whitespaces)
+            return Database.quote(Self.column(of: text)) + text.dropFirst(text.prefix { $0 != "(" && $0 != " " }.count)
+        }
+        return "CREATE \(kind == .unique ? "UNIQUE " : "")INDEX \(Database.quote(name)) ON \(Database.quote(table)) ("
+            + parts.joined(separator: ", ") + ");"
+    }
+}
+
 /// A table as it was when editing began: what changing it needs to know, read once so that
 /// remaking the SQL as the user types doesn't ask the database (a server, perhaps) each time.
 struct TableSnapshot {
     let name: String
     let columns: [ColumnDraft]
     let createStatement: String
-    /// Indexes made with CREATE INDEX (not the ones constraints make), with their SQL.
+    /// Indexes made with CREATE INDEX that the editor can't show (partial ones, with WHERE, and
+    /// those on expressions), with their SQL, to make again as they were on a rebuild.
     let indexes: [(index: Index, sql: String)]
     let triggers: [String]
     let foreignKeys: Bool
+    /// The other CREATE INDEX indexes, which the editor lists and changes.
+    var indexDrafts: [IndexDraft] = []
 }
 
 /// Makes the SQL that creates a table, or changes one to match its edited columns. SQLite can
@@ -34,15 +87,45 @@ enum TableDesign {
     static let types = ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB"]
 
     static func snapshot(of table: String, in database: DatabaseConnection) throws -> TableSnapshot {
-        try TableSnapshot(
+        var editable: [IndexDraft] = [], fixed: [(index: Index, sql: String)] = []
+        for index in try database.indexes(of: table) where !index.name.hasPrefix("sqlite_autoindex") {
+            let sql = try database.createStatement(of: index.name) ?? ""
+            let partial = sql.range(of: #"\bWHERE\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+            if !partial, let parts = indexParts(of: index.name, in: database), !parts.isEmpty {
+                editable.append(IndexDraft(name: index.name, kind: index.unique ? .unique : .index, columns: parts, original: index.name))
+            } else {
+                fixed.append((index, sql))
+            }
+        }
+        return try TableSnapshot(
             name: table,
             columns: drafts(of: table, in: database),
             createStatement: database.createStatement(of: table) ?? "",
-            indexes: database.indexes(of: table).filter { !$0.name.hasPrefix("sqlite_autoindex") }
-                .map { ($0, try database.createStatement(of: $0.name) ?? "") },
+            indexes: fixed.sorted { $0.index.name < $1.index.name },
             triggers: database.run("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?", [.text(table)])
                 .rows.map { $0[0].display },
-            foreignKeys: database.run("PRAGMA foreign_keys").rows.first?.first == .integer(1))
+            foreignKeys: database.run("PRAGMA foreign_keys").rows.first?.first == .integer(1),
+            indexDrafts: editable.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
+    }
+
+    /// An index's columns with their order and collation, from index_xinfo; from index_info
+    /// (names alone) on sqlite3 older than 3.9, which hasn't the other. Nil for an index on an
+    /// expression, which has no column name to show.
+    private static func indexParts(of index: String, in database: DatabaseConnection) -> [String]? {
+        if let rows = try? database.run("PRAGMA index_xinfo(\(Database.quote(index)))").rows, !rows.isEmpty, rows[0].count >= 6 {
+            var parts: [String] = []
+            for row in rows where row[5] == .integer(1) {   // the key's columns, not the rowid after them
+                guard row[2] != .null else { return nil }
+                var part = row[2].display
+                if row[4] != .null, row[4].display.uppercased() != "BINARY" { part += " COLLATE \(row[4].display)" }
+                if row[3] == .integer(1) { part += " DESC" }
+                parts.append(part)
+            }
+            return parts
+        }
+        guard let rows = try? database.run("PRAGMA index_info(\(Database.quote(index)))").rows,
+              !rows.contains(where: { $0.count < 3 || $0[2] == .null }) else { return nil }
+        return rows.map { $0[2].display }
     }
 
     /// The columns of an existing table, as drafts for editing.
@@ -59,7 +142,22 @@ enum TableDesign {
     }
 
     /// What's wrong with the draft, for the editor to show; nil when it can be saved.
-    static func problem(name: String, columns: [ColumnDraft]) -> String? {
+    static func problem(name: String, columns: [ColumnDraft], indexes: [IndexDraft] = []) -> String? {
+        if let problem = columnProblem(name: name, columns: columns) { return problem }
+        let names = Set(columns.map { $0.name.lowercased() })
+        let named = indexes.map { $0.name.trimmingCharacters(in: .whitespaces).lowercased() }
+        if named.contains("") { return tr("每個索引都要有名稱。", "Every index needs a name.") }
+        if Set(named).count != named.count { return tr("索引名稱不能重複。", "Index names must be different.") }
+        for index in indexes {
+            if index.columns.isEmpty { return tr("索引「\(index.name)」至少要有一個欄位。", "The index “\(index.name)” needs at least one column.") }
+            if let missing = index.columns.map(IndexDraft.column(of:)).first(where: { !names.contains($0.lowercased()) }) {
+                return tr("索引「\(index.name)」用到的欄位「\(missing)」不在資料表裡。", "The index “\(index.name)” uses “\(missing)”, which isn’t a column of the table.")
+            }
+        }
+        return nil
+    }
+
+    private static func columnProblem(name: String, columns: [ColumnDraft]) -> String? {
         if name.trimmingCharacters(in: .whitespaces).isEmpty { return tr("請輸入資料表名稱。", "Enter a name for the table.") }
         if columns.isEmpty { return tr("資料表至少要有一個欄位。", "A table needs at least one column.") }
         let names = columns.map { $0.name.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -70,11 +168,12 @@ enum TableDesign {
 
     // MARK: Creating
 
-    static func createSQL(name: String, columns: [ColumnDraft]) -> String {
+    static func createSQL(name: String, columns: [ColumnDraft], indexes: [IndexDraft] = []) -> String {
         let keys = columns.filter(\.primaryKey)
         var lines = columns.map { definition($0, inlineKey: keys.count == 1) }
         if keys.count > 1 { lines.append("PRIMARY KEY (" + keys.map { Database.quote($0.name) }.joined(separator: ", ") + ")") }
-        return "CREATE TABLE \(Database.quote(name)) (\n    " + lines.joined(separator: ",\n    ") + "\n);"
+        return (["CREATE TABLE \(Database.quote(name)) (\n    " + lines.joined(separator: ",\n    ") + "\n);"]
+                + indexes.map { $0.createSQL(on: name) }).joined(separator: "\n")
     }
 
     /// One column's definition. A key of several columns goes at the end of the table instead.
@@ -109,7 +208,8 @@ enum TableDesign {
 
     /// The SQL that turns the table as it is into the edited one, and what the change gives up
     /// (an index whose column was dropped, say), to show before it runs.
-    static func alterSQL(_ table: TableSnapshot, newName: String, columns: [ColumnDraft]) -> (sql: String, warnings: [String]) {
+    static func alterSQL(_ table: TableSnapshot, newName: String, columns: [ColumnDraft], indexes: [IndexDraft]? = nil) -> (sql: String, warnings: [String]) {
+        let indexes = indexes ?? table.indexDrafts
         let before = table.columns
         let renamed = newName != table.name
         let target = Database.quote(newName)
@@ -123,9 +223,18 @@ enum TableDesign {
             for column in added {
                 statements.append("ALTER TABLE \(target) ADD COLUMN \(definition(column, inlineKey: false));")
             }
+            // Indexes taken out or changed are dropped; changed and new ones made.
+            var creates: [String] = []
+            for old in table.indexDrafts {
+                let edited = indexes.first { $0.original == old.name }
+                guard edited != old else { continue }
+                statements.append("DROP INDEX \(Database.quote(old.name));")
+                if let edited { creates.append(edited.createSQL(on: newName)) }
+            }
+            statements += creates + indexes.filter { $0.original == nil }.map { $0.createSQL(on: newName) }
             return (statements.joined(separator: "\n"), [])
         }
-        return rebuildSQL(table, newName: newName, columns: columns)
+        return rebuildSQL(table, newName: newName, columns: columns, editedIndexes: indexes)
     }
 
     /// ADD COLUMN can't add a key or a unique column, nor a NOT NULL one without a default.
@@ -133,7 +242,8 @@ enum TableDesign {
         !column.primaryKey && !column.unique && (!column.notNull || !column.defaultValue.isEmpty)
     }
 
-    private static func rebuildSQL(_ table: TableSnapshot, newName: String, columns: [ColumnDraft]) -> (sql: String, warnings: [String]) {
+    private static func rebuildSQL(_ table: TableSnapshot, newName: String, columns: [ColumnDraft],
+                                   editedIndexes: [IndexDraft]) -> (sql: String, warnings: [String]) {
         var warnings: [String] = []
         let before = table.columns
         if table.createStatement.range(of: #"\b(REFERENCES|FOREIGN\s+KEY|CHECK)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
@@ -149,8 +259,9 @@ enum TableDesign {
                                "Deletes the column\(dropped.count == 1 ? "" : "s") \(dropped.map(\.name).joined(separator: ", ")) and the data in \(dropped.count == 1 ? "it" : "them")."))
         }
 
-        // Indexes the table had, made again on the new one with renamed columns, where they still apply.
-        var indexes: [String] = []
+        // The indexes as edited go on the new table (the old ones go with the old table); the
+        // partial and expression ones it had are made again with renamed columns, where they apply.
+        var indexes = editedIndexes.map { $0.createSQL(on: newName) }
         let renames = Dictionary(columns.compactMap { c in c.original.map { ($0, c.name) } }, uniquingKeysWith: { a, _ in a })
         for (index, sql) in table.indexes {
             let columnsNow = index.columns.compactMap { renames[$0] }

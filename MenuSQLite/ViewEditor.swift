@@ -3,7 +3,7 @@ import AppKit
 /// A window for writing a new view or changing one: its name, optional column names, and the
 /// SELECT that defines it, with a preview of the rows it gives. Saving first runs the SELECT,
 /// because SQLite accepts a view over a table that doesn't exist and fails only when it's read.
-final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate {
+final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
     private let panel: NSPanel
     private let database: DatabaseConnection
     private let original: String?
@@ -25,8 +25,9 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate {
         self.database = database
         self.original = original
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
-                        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
+        panel.delegate = self
         panel.title = original.map { tr("編輯視圖「\($0)」", "Edit View “\($0)”") } ?? tr("新增視圖", "New View")
         panel.minSize = NSSize(width: 520, height: 440)
         build()
@@ -151,6 +152,12 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate {
         sql = ViewDesign.sql(name: viewName, columns: columnsField.stringValue, select: editor.string, replacing: original)
         NSApp.stopModal(withCode: .OK)
         panel.orderOut(nil)
+    }
+
+    /// The title bar's close button: the same as Cancel.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cancel(sender)
+        return false
     }
 
     @objc private func cancel(_ sender: Any?) {

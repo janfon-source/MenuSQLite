@@ -3,7 +3,7 @@ import AppKit
 /// A window for importing a CSV file into a table: which CSV field fills each of the table's
 /// columns, whether the first line names the fields, and whether to add to the table's rows or
 /// replace them, with the file's first rows shown below.
-final class ImportWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+final class ImportWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
     private let panel: NSPanel
     private let text: String
     private let fileName: String
@@ -30,8 +30,9 @@ final class ImportWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         separator = CSV.guessSeparator(text)
         plan = CSVImport(table: table, columns: columns, sources: [], rows: [])
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 600),
-                        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
+        panel.delegate = self
         panel.title = tr("匯入 CSV 到「\(table)」", "Import CSV into “\(table)”")
         panel.minSize = NSSize(width: 520, height: 480)
         build()
@@ -273,6 +274,12 @@ final class ImportWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         result = plan
         NSApp.stopModal(withCode: .OK)
         panel.orderOut(nil)
+    }
+
+    /// The title bar's close button: the same as Cancel.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cancel(sender)
+        return false
     }
 
     @objc private func cancel(_ sender: Any?) {

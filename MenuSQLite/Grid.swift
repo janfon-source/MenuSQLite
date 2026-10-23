@@ -11,6 +11,12 @@ final class Grid: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDe
     var editable = false
     var onEdit: ((_ row: Int, _ column: Int, _ value: Value) -> Void)?
     var onSort: ((_ column: String, _ ascending: Bool) -> Void)?
+    /// Columns left out of view, by name. They're still in `result`, and still edited and sorted
+    /// by name; they just aren't shown or copied.
+    var hiddenColumns: Set<String> = [] {
+        didSet { applyHiddenColumns() }
+    }
+
     /// More right-click items, such as deleting rows, added after the grid's own.
     var extraMenuItems: () -> [NSMenuItem] = { [] }
 
@@ -65,7 +71,12 @@ final class Grid: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDe
             tableView.sortDescriptors = descriptors
             onSort = handler
         }
+        applyHiddenColumns()
         tableView.reloadData()
+    }
+
+    private func applyHiddenColumns() {
+        for column in tableView.tableColumns { column.isHidden = hiddenColumns.contains(column.title) }
     }
 
     /// Wide enough for the header and the first rows, within reason.
@@ -161,8 +172,10 @@ final class Grid: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDe
     func copySelection() {
         let rows = tableView.selectedRowIndexes.isEmpty ? IndexSet(result.rows.indices) : tableView.selectedRowIndexes
         guard !rows.isEmpty else { return }
-        let lines = [result.columns.joined(separator: "\t")]
-            + rows.map { result.rows[$0].map { $0 == .null ? "" : text(of: $0).replacingOccurrences(of: "\t", with: " ") }.joined(separator: "\t") }
+        let shown = result.columns.indices.filter { !hiddenColumns.contains(result.columns[$0]) }
+        let lines = [shown.map { result.columns[$0] }.joined(separator: "\t")]
+            + rows.map { row in shown.map { result.rows[row][$0] }
+                .map { $0 == .null ? "" : text(of: $0).replacingOccurrences(of: "\t", with: " ") }.joined(separator: "\t") }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
     }

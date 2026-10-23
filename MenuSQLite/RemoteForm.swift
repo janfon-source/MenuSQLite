@@ -16,6 +16,16 @@ final class RemoteForm: NSObject, NSComboBoxDelegate, NSTextFieldDelegate {
 
     var firstField: NSView { host.stringValue.isEmpty ? host : path }
 
+    /// Whether the fields can be used; off greys them out, for a form that's shown but not chosen.
+    var isEnabled = true {
+        didSet {
+            for control in [host, port, path, key] as [NSControl] { control.isEnabled = isEnabled }
+            for case let label as NSTextField in view.subviews where !label.isEditable && label !== resolved {
+                label.textColor = isEnabled ? .labelColor : .tertiaryLabelColor
+            }
+        }
+    }
+
     init(start: RemoteLocation?, hosts: [SSHHost] = SSHConfig.hosts(), lastPath: @escaping (String) -> String?) {
         self.hosts = hosts
         self.lastPath = lastPath
