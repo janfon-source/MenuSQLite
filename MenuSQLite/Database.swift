@@ -324,12 +324,18 @@ final class Database: DatabaseConnection {
         sqlite3_close_v2(handle)
     }
 
-    /// Whether the first bytes are SQLite's file header.
+    /// Whether the first bytes are SQLite's file header. An empty file counts too: SQLite opens it
+    /// as an empty database. So does a database extension, even when the bytes can't be read (a file
+    /// in iCloud not downloaded yet, say); opening one that isn't a database then says why.
     static func isDatabaseFile(_ url: URL) -> Bool {
+        if databaseExtensions.contains(url.pathExtension.lowercased()) { return true }
         guard let file = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? file.close() }
-        return (try? file.read(upToCount: 16)) == Data("SQLite format 3\0".utf8)
+        guard let head = try? file.read(upToCount: 16) else { return false }
+        return head.isEmpty || head == Data("SQLite format 3\0".utf8)
     }
+
+    static let databaseExtensions: Set<String> = ["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"]
 
     /// `name` as an SQL identifier, safe whatever characters it has.
     static func quote(_ name: String) -> String {

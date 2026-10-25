@@ -60,7 +60,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var dataPane: NSStackView!
     private var filterButton: NSButton!
     private var columnsButton: NSButton!
-    /// The Structure tab's menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT.
+    /// The Structure tab's menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT, empty.
     private var tableMenuButton: NSButton!
     /// Columns left out of the Data tab, by table, for as long as the app runs. Every column
     /// shows until some are unticked.
@@ -84,9 +84,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var previousButton: NSButton!
     private var nextButton: NSButton!
     private var pageDivider: NSView!
-    private var newTableButton: NSButton!
-    private var editTableButton: NSButton!
-    private var deleteTableButton: NSButton!
     private var importButton: NSButton!
     /// Toolbar buttons that act on the open database: Refresh, Export, Info, Structure Document.
     private var databaseButtons: [NSButton] = []
@@ -246,29 +243,23 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         scroll.drawsBackground = false
         scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
 
-        // Right-click a table, or use the buttons under the list, to add, change or delete tables.
+        // Right-click a table to add, change, empty or delete tables.
         let menu = NSMenu()
         for (zh, en, action) in [("新增資料表…", "New Table…", #selector(newTable(_:))),
                                  ("新增視圖…", "New View…", #selector(newView(_:))),
                                  ("編輯…", "Edit…", #selector(editTable(_:))),
                                  ("匯入 CSV…", "Import CSV…", #selector(importCSV(_:))),
+                                 ("清空…", "Empty…", #selector(emptyTable(_:))),
                                  ("刪除…", "Delete…", #selector(deleteTable(_:)))] {
             let item = menu.addItem(withTitle: tr(zh, en), action: action, keyEquivalent: "")
             item.target = self
         }
         sidebar.menu = menu
-        newTableButton = smallButton("plus", "新增資料表或視圖", "New Table or View", #selector(showNewMenu(_:)))
-        editTableButton = smallButton("pencil", "編輯資料表或視圖（⌥⌘E）", "Edit Table or View (⌥⌘E)", #selector(editTable(_:)))
-        deleteTableButton = smallButton("trash", "刪除資料表", "Delete Table", #selector(deleteTable(_:)))
-        let bar = NSStackView(views: [newTableButton, editTableButton, deleteTableButton, NSView()])
-        bar.spacing = 2
-        bar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
-        let pane = NSStackView(views: [scroll, bar])
+        let pane = NSStackView(views: [scroll])
         pane.orientation = .vertical
         pane.distribution = .fill
         pane.spacing = 0
         pane.setHuggingPriority(.init(1), for: .vertical)
-        bar.setHuggingPriority(.required, for: .vertical)
         scroll.widthAnchor.constraint(equalTo: pane.widthAnchor).isActive = true
         return pane
     }
@@ -370,8 +361,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let tabSpacer = NSView()
         tabSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
         columnsButton = toolButton("checklist", "選擇要顯示的欄位（⌥⌘K）", "Choose the Columns to Show (⌥⌘K)", #selector(showColumnsMenu(_:)))
-        tableMenuButton = toolButton("gearshape", "資料表功能：壓縮、分析、匯出、列印、自動遞增值",
-                                     "Table Actions: compact, analyze, export, print, AUTOINCREMENT", #selector(showTableMenu(_:)))
+        tableMenuButton = toolButton("gearshape", "資料表功能：壓縮、分析、匯出、列印、自動遞增值、清空",
+                                     "Table Actions: compact, analyze, export, print, AUTOINCREMENT, empty", #selector(showTableMenu(_:)))
         let tabBar = NSStackView(views: [tabs, tabSpacer, columnsButton, filterButton, tableMenuButton])
         tabBar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         tabBar.setHuggingPriority(.required, for: .vertical)   // its own height; the content takes the rest
@@ -932,9 +923,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     // MARK: - Tables
 
     private func updateTableButtons() {
-        newTableButton?.isEnabled = canChangeSchema
-        editTableButton?.isEnabled = canChangeSchema && selected != nil
-        deleteTableButton?.isEnabled = canChangeSchema && selected != nil
         for button in databaseButtons { button.isEnabled = database != nil }
         // Rows can only be imported into a table, not a view.
         importButton?.isEnabled = canChangeSchema && selected?.kind == .table
@@ -1039,13 +1027,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         changeSchema(sql, thenSelect: editor.tableName)
     }
 
-    @objc private func showNewMenu(_ sender: NSButton) {
-        let menu = NSMenu()
-        add(menu, tr("新增資料表…", "New Table…"), #selector(newTable(_:)))
-        add(menu, tr("新增視圖…", "New View…"), #selector(newView(_:)))
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
-    }
-
     @objc func newView(_ sender: Any?) {
         guard canChangeSchema, let database else { return NSSound.beep() }
         editView(nil, in: database)
@@ -1093,6 +1074,32 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         } catch {
             showError(tr("無法刪除", "Couldn’t delete"), error)
         }
+    }
+
+    /// Deletes every row of the table right-clicked in the list, keeping the table itself.
+    @objc func emptyTable(_ sender: Any?) { empty(actedOn) }
+
+    /// The Structure tab's menu acts on the table showing.
+    @objc func emptySelectedTable(_ sender: Any?) { empty(selected) }
+
+    private func empty(_ object: DatabaseObject?) {
+        guard canChangeSchema, let database, let object, object.kind == .table else { return NSSound.beep() }
+        let alert = NSAlert()
+        alert.messageText = tr("要清空資料表「\(object.name)」嗎？", "Empty the table “\(object.name)”?")
+        alert.informativeText = tr("資料表中的所有資料都會刪除，無法復原；資料表結構會保留。",
+                                   "All rows in the table will be deleted. This can’t be undone; the table itself stays.")
+        alert.addButton(withTitle: tr("清空", "Empty")).hasDestructiveAction = true
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
+        do {
+            // SQLite has no TRUNCATE; a DELETE without WHERE empties the table just as fast.
+            try database.run("DELETE FROM \(Database.quote(object.name))")
+        } catch {
+            return showError(tr("無法清空", "Couldn’t empty the table"), error)
+        }
+        guard selected?.name == object.name else { return }
+        loadPage()
+        if tab == .structure { refreshStructure() }
     }
 
     /// Runs the editor's SQL, then shows the table as it is now at once: the Data tab's columns
@@ -1528,6 +1535,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             menu.addItem(.separator())
             item("重設自動遞增值", "Reset AUTOINCREMENT", #selector(resetAutoIncrement(_:)), enabled: auto)
             item("將自動遞增值設為…", "Set AUTOINCREMENT to…", #selector(setAutoIncrement(_:)), enabled: auto)
+            menu.addItem(.separator())
+            item("清空資料…", "Empty Table…", #selector(emptySelectedTable(_:)), enabled: writable)
         }
         // Its right edge under the button's, so it opens into the window rather than past it.
         menu.popUp(positioning: nil, at: NSPoint(x: tableMenuButton.bounds.width - menu.size.width,
@@ -2394,7 +2403,7 @@ extension MainViewController: NSMenuItemValidation {
             return canChangeSchema
         case #selector(editTable(_:)):
             return canChangeSchema && actedOn != nil
-        case #selector(importCSV(_:)):
+        case #selector(importCSV(_:)), #selector(emptyTable(_:)):
             return canChangeSchema && actedOn?.kind == .table
         case #selector(deleteTable(_:)):
             return canChangeSchema && actedOn != nil
