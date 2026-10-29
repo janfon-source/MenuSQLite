@@ -3,7 +3,7 @@ import ServiceManagement
 import UniformTypeIdentifiers
 
 /// The popover's content: the open database's tables on the left, and on the right a table's
-/// rows, its structure, or an SQL query and its results.
+/// design to edit, its rows, its structure, or an SQL query and its results.
 final class MainViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
                                 NSTextViewDelegate, NSOpenSavePanelDelegate {
     weak var popover: NSPopover?
@@ -21,7 +21,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// reselects the same row, which mustn't count as choosing it again and lose its filter.
     private var shown: DatabaseObject?
 
-    private enum Tab: Int { case data, structure, query }
+    private enum Tab: Int { case edit, data, structure, query }
     private var tab = Tab.data {
         didSet { showTab() }
     }
@@ -60,13 +60,19 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var dataPane: NSStackView!
     private var filterButton: NSButton!
     private var columnsButton: NSButton!
-    /// The Structure tab's menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT, empty.
+    /// The Structure and Edit tabs' menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT, empty.
     private var tableMenuButton: NSButton!
     /// Columns left out of the Data tab, by table, for as long as the app runs. Every column
     /// shows until some are unticked.
     private var hiddenColumns: [String: Set<String>] = [:]
     private let queryGrid = Grid()
     private let structureView = NSTextView.scrollableTextView()
+    /// The Edit tab: the table's or view's editor, scrolling when the window is too short for it.
+    private let designView = NSScrollView()
+    private let designHolder = FlippedView()
+    private let designMessage = NSTextField(wrappingLabelWithString: "")
+    /// The editor showing in the Edit tab, kept for as long as it shows.
+    private var designEditor: AnyObject?
     private let editorView = NSTextView.scrollableTextView()
     private var editor: NSTextView { editorView.documentView as! NSTextView }
     private var structureText: NSTextView { structureView.documentView as! NSTextView }
@@ -247,7 +253,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let menu = NSMenu()
         for (zh, en, action) in [("新增資料表…", "New Table…", #selector(newTable(_:))),
                                  ("新增視圖…", "New View…", #selector(newView(_:))),
-                                 ("編輯…", "Edit…", #selector(editTable(_:))),
                                  ("匯入 CSV…", "Import CSV…", #selector(importCSV(_:))),
                                  ("清空…", "Empty…", #selector(emptyTable(_:))),
                                  ("刪除…", "Delete…", #selector(deleteTable(_:)))] {
@@ -266,9 +271,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     private func makeDetail() -> NSView {
         tabs.segmentStyle = .rounded
-        tabs.segmentCount = 3
+        tabs.segmentCount = 4
         tabs.trackingMode = .selectOne
-        tabs.selectedSegment = 0
+        tabs.selectedSegment = Tab.data.rawValue
         tabs.target = self
         tabs.action = #selector(tabChanged(_:))
 
@@ -301,6 +306,21 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         dataGrid.scrollView.widthAnchor.constraint(equalTo: dataPane.widthAnchor).isActive = true
         filterBar.setHuggingPriority(.required, for: .vertical)
         dataGrid.scrollView.setContentHuggingPriority(.init(1), for: .vertical)
+
+        // Edit: the editor goes in the holder, as wide as the tab and at least as tall.
+        designView.hasVerticalScroller = true
+        designView.autohidesScrollers = true
+        designView.drawsBackground = false
+        designView.documentView = designHolder
+        designHolder.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            designHolder.leadingAnchor.constraint(equalTo: designView.contentView.leadingAnchor),
+            designHolder.topAnchor.constraint(equalTo: designView.contentView.topAnchor),
+            designHolder.widthAnchor.constraint(equalTo: designView.contentView.widthAnchor),
+            designHolder.heightAnchor.constraint(greaterThanOrEqualTo: designView.contentView.heightAnchor),
+        ])
+        designMessage.alignment = .center
+        designMessage.textColor = .secondaryLabelColor
 
         // Structure: columns, indexes and the CREATE statement.
         structureText.isEditable = false
@@ -343,7 +363,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
         emptyLabel.alignment = .center
         emptyLabel.textColor = .secondaryLabelColor
-        for view in [dataPane!, structureView, querySplit, emptyLabel] {
+        for view in [designView, dataPane!, structureView, querySplit, emptyLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
             let inset: CGFloat = view === emptyLabel ? 24 : 0
@@ -453,9 +473,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                 view.setAccessibilityLabel(view.toolTip)
             }
         }
-        tabs.setLabel(tr("資料", "Data"), forSegment: 0)
-        tabs.setLabel(tr("結構", "Structure"), forSegment: 1)
-        tabs.setLabel("SQL", forSegment: 2)
+        tabs.setLabel(tr("編輯", "Edit"), forSegment: Tab.edit.rawValue)
+        tabs.setLabel(tr("資料", "Data"), forSegment: Tab.data.rawValue)
+        tabs.setLabel(tr("結構", "Structure"), forSegment: Tab.structure.rawValue)
+        tabs.setLabel("SQL", forSegment: Tab.query.rawValue)
         updateTitle()
         updateFooter()
         filterBar.applyLanguage()
@@ -647,7 +668,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func switchToSession(_ index: Int) {
-        guard sessions.indices.contains(index), index != active else { return }
+        guard sessions.indices.contains(index), index != active, confirmDiscardingDesign() else { return }
         saveSession()
         active = index
         restoreSession()
@@ -655,7 +676,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Closes a tab and its database; the tab beside it shows instead.
     private func closeSession(_ index: Int) {
-        guard sessions.indices.contains(index), let current = active else { return }
+        guard sessions.indices.contains(index), let current = active, index != current || confirmDiscardingDesign() else { return }
         sessions.remove(at: index)
         if sessions.isEmpty {
             active = nil
@@ -990,6 +1011,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         return cell
     }
 
+    func selectionShouldChange(in tableView: NSTableView) -> Bool {
+        tableView !== sidebar || confirmDiscardingDesign()
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard notification.object as AnyObject === sidebar, selected != shown else { return }
         selectionChanged()
@@ -1043,20 +1068,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         changeSchema(sql, thenSelect: editor.viewName)
     }
 
-    /// Edits the table or view: columns for a table, the SELECT for a view.
-    @objc func editTable(_ sender: Any?) {
-        guard canChangeSchema, let database, let object = actedOn else { return NSSound.beep() }
-        if object.kind == .view { return editView(object.name, in: database) }
-        let snapshot: TableSnapshot
-        do {
-            snapshot = try TableDesign.snapshot(of: object.name, in: database)
-        } catch {
-            return showError(tr("無法讀取資料表結構", "Couldn’t read the table’s structure"), error)
-        }
-        let editor = TableEditor(snapshot: snapshot)
-        guard keepingPopoverOpen({ editor.run() }), let sql = editor.sql else { return }
-        changeSchema(sql, thenSelect: editor.tableName)
-    }
+    /// Edits the selected table or view, in the Edit tab: columns for a table, the SELECT for a view.
+    @objc func editTable(_ sender: Any?) { showEditTab(sender) }
 
     @objc func deleteTable(_ sender: Any?) {
         guard canChangeSchema, let database, let object = actedOn else { return NSSound.beep() }
@@ -1079,7 +1092,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// Deletes every row of the table right-clicked in the list, keeping the table itself.
     @objc func emptyTable(_ sender: Any?) { empty(actedOn) }
 
-    /// The Structure tab's menu acts on the table showing.
+    /// The Structure and Edit tabs' menu acts on the table showing.
     @objc func emptySelectedTable(_ sender: Any?) { empty(selected) }
 
     private func empty(_ object: DatabaseObject?) {
@@ -1103,13 +1116,15 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     /// Runs the editor's SQL, then shows the table as it is now at once: the Data tab's columns
-    /// in their new order, the filter's columns, the Structure tab and the SQL tab's SELECT.
-    private func changeSchema(_ sql: String, thenSelect name: String) {
+    /// in their new order, the filter's columns, the Structure and Edit tabs and the SQL tab's
+    /// SELECT. From the Edit tab, a statement refused leaves the editor as it was, to fix.
+    private func changeSchema(_ sql: String, thenSelect name: String, keepingEditsOnFailure: Bool = false) {
         guard let database else { return }
         do {
             try TableDesign.apply(sql, to: database)
         } catch {
             showError(tr("無法變更資料表", "Couldn’t change the table"), error)
+            if keepingEditsOnFailure { return }
         }
         reloadObjects()
         if let row = objects.firstIndex(where: { $0.name == name }) {
@@ -1344,15 +1359,87 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         loadPage(recount: false)
     }
 
+    // MARK: - Edit tab
+
+    /// Whether the Edit tab's editor is for an older table, or an older design, than it should be.
+    /// It's made again when the tab next shows; changes not saved by then are dropped.
+    private var designStale = true
+    /// Its changes were dropped when asked, so they're not asked about again before it's remade.
+    private var designDiscarded = false
+
+    /// Before the Edit tab's editor is made again for another table or database: true if it has
+    /// no changes, or they're to be dropped.
+    private func confirmDiscardingDesign() -> Bool {
+        let changed = (designEditor as? TableEditor)?.hasChanges ?? (designEditor as? ViewEditor)?.hasChanges ?? false
+        guard changed, !designDiscarded, let object = shown else { return true }
+        let alert = NSAlert()
+        alert.messageText = tr("要放棄對「\(object.name)」未儲存的變更嗎？", "Discard the unsaved changes to “\(object.name)”?")
+        alert.informativeText = tr("「編輯」分頁中的變更還沒有儲存。", "The changes in the Edit tab haven’t been saved.")
+        alert.addButton(withTitle: tr("放棄變更", "Discard Changes")).hasDestructiveAction = true
+        alert.addButton(withTitle: tr("取消", "Cancel"))
+        guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else {
+            tab = .edit
+            return false
+        }
+        designDiscarded = true   // asked once; the editor is made again next
+        designStale = true
+        return true
+    }
+
+    /// Puts the selected table's or view's editor in the Edit tab, as it stands in the database.
+    private func refreshDesign() {
+        designStale = false
+        designDiscarded = false
+        designHolder.subviews.forEach { $0.removeFromSuperview() }
+        designEditor = nil
+        guard let database, let object = selected else { return }
+        let content: NSView
+        // Once Save's click is over: saving replaces the editor with one for the table as it is now.
+        let onSave: (String, String) -> Void = { [weak self] sql, name in
+            DispatchQueue.main.async { self?.changeSchema(sql, thenSelect: name, keepingEditsOnFailure: true) }
+        }
+        do {
+            if !canChangeSchema {
+                designMessage.stringValue = tr("這個資料庫是唯讀開啟的，無法編輯資料表或視圖。", "This database is open read-only, so tables and views can’t be edited.")
+                content = designMessage
+            } else if object.kind == .view {
+                let editor = try ViewEditor(database: database, original: object.name, onSave: onSave)
+                designEditor = editor
+                content = editor.view
+            } else {
+                let editor = TableEditor(snapshot: try TableDesign.snapshot(of: object.name, in: database), onSave: onSave)
+                designEditor = editor
+                content = editor.view
+            }
+        } catch {
+            designMessage.stringValue = error.localizedDescription
+            content = designMessage
+        }
+        content.translatesAutoresizingMaskIntoConstraints = false
+        designHolder.addSubview(content)
+        let inset: CGFloat = content === designMessage ? 24 : 0
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: designHolder.leadingAnchor, constant: inset),
+            content.trailingAnchor.constraint(equalTo: designHolder.trailingAnchor, constant: -inset),
+            content.topAnchor.constraint(equalTo: designHolder.topAnchor, constant: inset),
+            content.bottomAnchor.constraint(equalTo: designHolder.bottomAnchor, constant: -inset),
+        ])
+    }
+
     // MARK: - Structure tab
 
     /// Whether the Structure tab shows an older table, or older facts, than it should. It's read
     /// again when it next shows, so choosing tables on the Data tab doesn't wait for it.
     private var structureStale = true
 
-    private func loadStructure() {
+    /// `keepingDesign` after the table menu's actions, which leave the design (and the Edit tab's
+    /// changes) as they were.
+    private func loadStructure(keepingDesign: Bool = false) {
         structureStale = true
         if isViewLoaded, tab == .structure { refreshStructure() }
+        guard !keepingDesign else { return }
+        designStale = true
+        if isViewLoaded, tab == .edit { refreshDesign() }
     }
 
     /// What the Structure tab shows of a table or view.
@@ -1514,7 +1601,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     @objc func showTableMenu(_ sender: Any?) {
         guard let database, let object = selected else { return NSSound.beep() }
-        if tab != .structure { tab = .structure }
+        if tab != .structure, tab != .edit { tab = .structure }
         let menu = NSMenu()
         menu.autoenablesItems = false
         func item(_ zh: String, _ en: String, _ action: Selector, enabled: Bool = true) {
@@ -1561,7 +1648,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             guard let self else { return }
             switch result {
             case .success(let (before, after)):
-                self.loadStructure()
+                self.loadStructure(keepingDesign: true)
                 var text = tr("VACUUM 重建了整個資料庫檔案，把刪除資料後留下的空間還給系統。",
                               "VACUUM rebuilt the whole database file, giving back the space deleted rows left.")
                 if let before, let after {
@@ -1584,7 +1671,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             guard let self else { return }
             switch result {
             case .success:
-                self.loadStructure()
+                self.loadStructure(keepingDesign: true)
                 self.inform(tr("已分析資料表", "Table analyzed"),
                             tr("索引的統計資料已更新（存在 sqlite_stat1），查詢計畫會更準確。",
                                "The index statistics are up to date (in sqlite_stat1), for better query plans."))
@@ -1656,7 +1743,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             alert.addButton(withTitle: tr("取消", "Cancel"))
             guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
             let now = try database.setAutoIncrement(of: object.name, to: next)
-            loadStructure()
+            loadStructure(keepingDesign: true)
             inform(tr("已重設自動遞增值", "AUTOINCREMENT reset"),
                    tr("下一個自動遞增值：\(now.map(String.init) ?? "—")", "Next AUTOINCREMENT: \(now.map(String.init) ?? "—")"))
         } catch {
@@ -1686,7 +1773,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                     continue
                 }
                 let now = try database.setAutoIncrement(of: object.name, to: value)
-                loadStructure()
+                loadStructure(keepingDesign: true)
                 inform(tr("已設定自動遞增值", "AUTOINCREMENT set"),
                        tr("下一個自動遞增值：\(now.map(String.init) ?? "—")", "Next AUTOINCREMENT: \(now.map(String.init) ?? "—")"))
                 return
@@ -1797,6 +1884,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         tab = Tab(rawValue: sender.selectedSegment) ?? .data
     }
 
+    @objc func showEditTab(_ sender: Any?) { tab = .edit }
     @objc func showDataTab(_ sender: Any?) { tab = .data }
     @objc func showStructureTab(_ sender: Any?) { tab = .structure }
     @objc func showQueryTab(_ sender: Any?) { tab = .query }
@@ -1805,14 +1893,16 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         guard isViewLoaded else { return }
         tabs.selectedSegment = tab.rawValue
         let hasTable = selected != nil
+        designView.isHidden = tab != .edit || !hasTable
+        if !designView.isHidden, designStale { refreshDesign() }
         dataPane.isHidden = tab != .data || !hasTable
         filterButton.isHidden = dataPane.isHidden
         columnsButton.isHidden = dataPane.isHidden
         structureView.isHidden = tab != .structure || !hasTable
-        tableMenuButton.isHidden = structureView.isHidden
+        tableMenuButton.isHidden = structureView.isHidden && designView.isHidden
         if !structureView.isHidden, structureStale { refreshStructure() }
         querySplit.isHidden = tab != .query || database == nil
-        emptyLabel.isHidden = !(dataPane.isHidden && structureView.isHidden && querySplit.isHidden)
+        emptyLabel.isHidden = !(designView.isHidden && dataPane.isHidden && structureView.isHidden && querySplit.isHidden)
         emptyLabel.stringValue = database == nil
             ? tr("按工具列的資料夾按鈕開啟 SQLite 資料庫（⌘O），或按 ⌘N 新增一個。",
                  "Open an SQLite database with the folder button (⌘O), or make a new one with ⌘N.")
@@ -1891,6 +1981,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     // MARK: - Refresh and export
 
     @objc func refresh(_ sender: Any?) {
+        // After saving in the Edit tab (sent with no sender), the changes are in the database.
+        if sender != nil, !confirmDiscardingDesign() { return }
         reloadObjects()
         filterBar.update(columns: selectedColumns)
         updateFilterButton()
@@ -2205,7 +2297,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         menu.addItem(.separator())
         add(menu, tr("新增資料表…", "New Table…"), #selector(newTable(_:)), key: "n").keyEquivalentModifierMask = [.command, .option]
         add(menu, tr("新增視圖…", "New View…"), #selector(newView(_:)), key: "N").keyEquivalentModifierMask = [.command, .option, .shift]
-        add(menu, tr("編輯資料表或視圖…", "Edit Table or View…"), #selector(editTable(_:)), key: "e").keyEquivalentModifierMask = [.command, .option]
+        add(menu, tr("編輯資料表或視圖", "Edit Table or View"), #selector(editTable(_:)), key: "e").keyEquivalentModifierMask = [.command, .option]
         menu.addItem(.separator())
         add(menu, tr("恢復預設視窗大小", "Restore Default Window Size"), #selector(resetSize(_:)))
         let themes = NSMenu()
@@ -2387,7 +2479,7 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showDatabaseInfo(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)),
              #selector(addToFavorites(_:)):
             return database != nil
-        case #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)), #selector(showColumnsMenu(_:)):
+        case #selector(showEditTab(_:)), #selector(editTable(_:)), #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)), #selector(showColumnsMenu(_:)):
             return selected != nil
         case #selector(nextTab(_:)), #selector(previousTab(_:)):
             return sessions.count > 1
@@ -2401,8 +2493,6 @@ extension MainViewController: NSMenuItemValidation {
             return dataGrid.editable && tab == .data
         case #selector(newTable(_:)), #selector(newView(_:)):
             return canChangeSchema
-        case #selector(editTable(_:)):
-            return canChangeSchema && actedOn != nil
         case #selector(importCSV(_:)), #selector(emptyTable(_:)):
             return canChangeSchema && actedOn?.kind == .table
         case #selector(deleteTable(_:)):
@@ -2411,6 +2501,11 @@ extension MainViewController: NSMenuItemValidation {
             return true
         }
     }
+}
+
+/// Lays its content out from the top, so the Edit tab's editor starts scrolled to its top.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 /// A tab in the strip under the toolbar: its title and close button on a rounded background,

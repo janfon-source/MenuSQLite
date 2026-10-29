@@ -1,10 +1,15 @@
 import AppKit
 
-/// A window for writing a new view or changing one: its name, optional column names, and the
+/// A window for writing a new view, or the Edit tab's editor for changing one: its name, optional column names, and the
 /// SELECT that defines it, with a preview of the rows it gives. Saving first runs the SELECT,
 /// because SQLite accepts a view over a table that doesn't exist and fails only when it's read.
 final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
-    private let panel: NSPanel
+    /// The window of a new view's editor; nil for one in the Edit tab.
+    private let panel: NSPanel?
+    /// Everything the editor shows: the window's content, or the Edit tab's.
+    let view = NSView()
+    /// For an editor in the Edit tab: Save hands it the SQL and the name, and Cancel becomes Revert.
+    private let onSave: ((_ sql: String, _ name: String) -> Void)?
     private let database: DatabaseConnection
     private let original: String?
     private let nameField = NSTextField()
@@ -14,42 +19,51 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWin
     private let results = Grid()
     private let message = NSTextField(wrappingLabelWithString: "")
     private var saveButton: NSButton!
+    /// The definition as loaded, and the warning about its triggers, for Revert.
+    private var loaded = (columns: "", select: "")
+    private var triggerWarning = ""
+    /// In the Edit tab: whether the name, column names or SELECT differ from the view as it is.
+    var hasChanges: Bool {
+        view.window?.makeFirstResponder(nil)   // the text typed so far counts
+        return original.map { viewName != $0 } ?? false || columnsField.stringValue != loaded.columns || editor.string != loaded.select
+    }
 
     /// The SQL to run, once the window closes with Save.
     private(set) var sql: String?
     var viewName: String { nameField.stringValue.trimmingCharacters(in: .whitespaces) }
-    var window: NSWindow { panel }
-
     /// For a new view, `original` is nil; otherwise the view's name, whose definition is loaded.
-    init(database: DatabaseConnection, original: String?) throws {
+    /// With `onSave`, the editor goes in the Edit tab rather than a window of its own.
+    init(database: DatabaseConnection, original: String?, onSave: ((_ sql: String, _ name: String) -> Void)? = nil) throws {
         self.database = database
         self.original = original
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
-                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        self.onSave = onSave
+        panel = onSave != nil ? nil : NSPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
+                                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
-        panel.delegate = self
-        panel.title = original.map { tr("編輯視圖「\($0)」", "Edit View “\($0)”") } ?? tr("新增視圖", "New View")
-        panel.minSize = NSSize(width: 520, height: 440)
+        if let panel {
+            panel.delegate = self
+            panel.title = original.map { tr("編輯視圖「\($0)」", "Edit View “\($0)”") } ?? tr("新增視圖", "New View")
+            panel.minSize = NSSize(width: 520, height: 440)
+            panel.contentView = view
+        }
         build()
         if let original {
-            let parts = ViewDesign.parts(of: try database.createStatement(of: original) ?? "")
-            nameField.stringValue = original
-            columnsField.stringValue = parts.columns
-            editor.string = parts.select
+            loaded = ViewDesign.parts(of: try database.createStatement(of: original) ?? "")
             let triggers = try database.run("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?", [.text(original)]).rows
             if !triggers.isEmpty {
-                show(tr("儲存時會重建視圖，觸發程序 \(triggers.map { $0[0].display }.joined(separator: "、")) 會被刪除。",
-                        "Saving rebuilds the view, deleting the trigger\(triggers.count == 1 ? "" : "s") \(triggers.map { $0[0].display }.joined(separator: ", "))."),
-                     error: false)
+                triggerWarning = tr("儲存時會重建視圖，觸發程序 \(triggers.map { $0[0].display }.joined(separator: "、")) 會被刪除。",
+                                    "Saving rebuilds the view, deleting the trigger\(triggers.count == 1 ? "" : "s") \(triggers.map { $0[0].display }.joined(separator: ", ")).")
             }
+            revert()
         } else {
             editor.string = "SELECT\n  \nFROM "
+            highlight()
         }
-        highlight()
     }
 
     /// Shows the window until it's closed; true if Save was clicked.
     func run() -> Bool {
+        guard let panel else { return false }
         panel.center()
         panel.makeFirstResponder(original == nil ? nameField : editor)
         return NSApp.runModal(for: panel) == .OK
@@ -79,18 +93,24 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWin
         editorView.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
 
         let previewButton = NSButton(title: tr("預覽結果", "Preview"), target: self, action: #selector(preview(_:)))
-        previewButton.keyEquivalent = "\r"
-        previewButton.keyEquivalentModifierMask = .command
+        let inTab = panel == nil
+        // ⌘↩ belongs to the SQL tab's Run in the main window, and Return and Esc to its other views.
+        if !inTab {
+            previewButton.keyEquivalent = "\r"
+            previewButton.keyEquivalentModifierMask = .command
+        }
         let previewBar = NSStackView(views: [NSTextField(labelWithString: "AS"), NSView(), previewButton])
         results.scrollView.borderType = .bezelBorder
-        results.scrollView.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        results.scrollView.heightAnchor.constraint(equalToConstant: inTab ? 120 : 150).isActive = true
         message.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         message.isHidden = true
 
         saveButton = NSButton(title: original == nil ? tr("建立", "Create") : tr("儲存", "Save"), target: self, action: #selector(save(_:)))
-        saveButton.keyEquivalent = "\r"
-        let cancel = NSButton(title: tr("取消", "Cancel"), target: self, action: #selector(cancel(_:)))
-        cancel.keyEquivalent = "\u{1b}"
+        let cancel = NSButton(title: inTab ? tr("還原", "Revert") : tr("取消", "Cancel"), target: self, action: #selector(cancel(_:)))
+        if !inTab {
+            saveButton.keyEquivalent = "\r"
+            cancel.keyEquivalent = "\u{1b}"
+        }
         let actions = NSStackView(views: [NSView(), cancel, saveButton])
 
         let stack = NSStackView(views: [fields, previewBar, editorView, message, results.scrollView, actions])
@@ -98,18 +118,19 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWin
         stack.alignment = .leading
         stack.distribution = .fill
         stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        let inset: CGFloat = inTab ? 12 : 16
+        stack.edgeInsets = NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView!.addSubview(stack)
+        view.addSubview(stack)
         for view in [fields, previewBar, editorView, message, results.scrollView, actions] {
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset).isActive = true
         }
         editorView.setContentHuggingPriority(.init(1), for: .vertical)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: panel.contentView!.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
@@ -145,13 +166,15 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWin
     }
 
     @objc private func save(_ sender: Any?) {
-        panel.makeFirstResponder(nil)
+        view.window?.makeFirstResponder(nil)
         guard !viewName.isEmpty else { show(tr("請輸入視圖名稱。", "Enter a name for the view."), error: true); return NSSound.beep() }
         guard !ViewDesign.trimmed(editor.string).isEmpty else { show(tr("請輸入 SELECT 語句。", "Enter a SELECT statement."), error: true); return NSSound.beep() }
         guard preview(nil) else { return NSSound.beep() }
-        sql = ViewDesign.sql(name: viewName, columns: columnsField.stringValue, select: editor.string, replacing: original)
+        let sql = ViewDesign.sql(name: viewName, columns: columnsField.stringValue, select: editor.string, replacing: original)
+        if let onSave { return onSave(sql, viewName) }
+        self.sql = sql
         NSApp.stopModal(withCode: .OK)
-        panel.orderOut(nil)
+        panel?.orderOut(nil)
     }
 
     /// The title bar's close button: the same as Cancel.
@@ -161,8 +184,21 @@ final class ViewEditor: NSObject, NSTextViewDelegate, NSTextFieldDelegate, NSWin
     }
 
     @objc private func cancel(_ sender: Any?) {
+        guard let panel else { return revert() }
         sql = nil
         NSApp.stopModal(withCode: .cancel)
         panel.orderOut(nil)
+    }
+
+    /// The view as loaded: on opening, and in the Edit tab to drop the changes.
+    private func revert() {
+        guard let original else { return }
+        view.window?.makeFirstResponder(nil)
+        nameField.stringValue = original
+        columnsField.stringValue = loaded.columns
+        editor.string = loaded.select
+        highlight()
+        results.show(ResultSet())
+        show(triggerWarning, error: false)
     }
 }

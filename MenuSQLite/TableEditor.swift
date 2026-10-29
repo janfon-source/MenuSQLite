@@ -1,10 +1,15 @@
 import AppKit
 
-/// A window for designing a new table or changing one: its name, and a row per column with
+/// A window for designing a new table, or the Edit tab's editor for changing one: its name, and a row per column with
 /// type, length, key, NOT NULL, UNIQUE and default (dragged by the handle at the left to reorder). The SQL it will run shows below as it's edited,
 /// with any warning, such as a column's data being deleted.
 final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSComboBoxDelegate, NSWindowDelegate {
-    private let panel: NSPanel
+    /// The window of a new table's editor; nil for one in the Edit tab.
+    private let panel: NSPanel?
+    /// Everything the editor shows: the window's content, or the Edit tab's.
+    let view = NSView()
+    /// For an editor in the Edit tab: Save hands it the SQL and the name, and Cancel becomes Revert.
+    private let onSave: ((_ sql: String, _ name: String) -> Void)?
     private let snapshot: TableSnapshot?
     private var columns: [ColumnDraft]
     private var indexes: [IndexDraft]
@@ -16,6 +21,9 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private let preview = NSTextView.scrollableTextView()
     private var previewText: NSTextView { preview.documentView as! NSTextView }
     private var saveButton: NSButton!
+    private var cancelButton: NSButton!
+    /// In the Edit tab: whether the design differs from the table as it is.
+    private(set) var hasChanges = false
     private var removeButton: NSButton!
     private var upButton: NSButton!
     private var downButton: NSButton!
@@ -69,25 +77,29 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         }
     }
 
-    /// For a new table, `snapshot` is nil.
-    init(snapshot: TableSnapshot?) {
+    /// For a new table, `snapshot` is nil. With `onSave`, the editor goes in the Edit tab rather
+    /// than a window of its own.
+    init(snapshot: TableSnapshot?, onSave: ((_ sql: String, _ name: String) -> Void)? = nil) {
         self.snapshot = snapshot
+        self.onSave = onSave
         columns = snapshot?.columns ?? [ColumnDraft(name: "id", type: "INTEGER", primaryKey: true, autoincrement: true)]
         indexes = snapshot?.indexDrafts ?? []
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
-                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        panel = onSave != nil ? nil : NSPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
+                                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
-        panel.delegate = self
-        panel.title = snapshot == nil ? tr("新增資料表", "New Table") : tr("編輯資料表「\(snapshot!.name)」", "Edit Table “\(snapshot!.name)”")
-        panel.minSize = NSSize(width: 640, height: 580)
+        if let panel {
+            panel.delegate = self
+            panel.title = snapshot == nil ? tr("新增資料表", "New Table") : tr("編輯資料表「\(snapshot!.name)」", "Edit Table “\(snapshot!.name)”")
+            panel.minSize = NSSize(width: 640, height: 580)
+            panel.contentView = view
+        }
         build()
         update()
     }
 
-    var window: NSWindow { panel }
-
     /// Shows the window until it's closed; true if Save was clicked.
     func run() -> Bool {
+        guard let panel else { return false }
         panel.center()
         panel.makeFirstResponder(snapshot == nil ? nameField : table)
         return NSApp.runModal(for: panel) == .OK
@@ -158,7 +170,9 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         indexScroll.documentView = indexTable
         indexScroll.hasVerticalScroller = true
         indexScroll.borderType = .bezelBorder
-        indexScroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        // Smaller in the Edit tab, which has less room than a window and scrolls when short of it.
+        let inTab = panel == nil
+        indexScroll.heightAnchor.constraint(equalToConstant: inTab ? 90 : 120).isActive = true
         let indexTitle = NSTextField(labelWithString: tr("索引", "Indexes"))
         indexTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
         let indexHint = NSTextField(labelWithString: tr("主鍵和單一欄位的唯一限制，用上方欄位的「主鍵」「唯一」勾選。",
@@ -179,13 +193,16 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         previewText.textContainerInset = NSSize(width: 6, height: 6)
         preview.borderType = .bezelBorder
         preview.hasVerticalScroller = true
-        preview.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        preview.heightAnchor.constraint(equalToConstant: inTab ? 90 : 150).isActive = true
 
         saveButton = NSButton(title: snapshot == nil ? tr("建立", "Create") : tr("儲存", "Save"), target: self, action: #selector(save(_:)))
-        saveButton.keyEquivalent = "\r"
-        let cancel = NSButton(title: tr("取消", "Cancel"), target: self, action: #selector(cancel(_:)))
-        cancel.keyEquivalent = "\u{1b}"
-        let actions = NSStackView(views: [NSView(), cancel, saveButton])
+        cancelButton = NSButton(title: inTab ? tr("還原", "Revert") : tr("取消", "Cancel"), target: self, action: #selector(cancel(_:)))
+        // Return and Esc belong to the window's own editor; in the tab, Esc hides the window.
+        if !inTab {
+            saveButton.keyEquivalent = "\r"
+            cancelButton.keyEquivalent = "\u{1b}"
+        }
+        let actions = NSStackView(views: [NSView(), cancelButton, saveButton])
 
         let stack = NSStackView(views: [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message,
                                         NSTextField(labelWithString: tr("將執行的 SQL", "SQL to Run")), preview, actions])
@@ -193,20 +210,21 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         stack.alignment = .leading
         stack.spacing = 8
         stack.distribution = .fill
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        let inset: CGFloat = inTab ? 12 : 16
+        stack.edgeInsets = NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView!.addSubview(stack)
+        view.addSubview(stack)
         stack.setCustomSpacing(14, after: columnButtons)
         for view in [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, preview, actions] {
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset).isActive = true
         }
         tableScroll.setContentHuggingPriority(.init(1), for: .vertical)
-        tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
+        tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: inTab ? 110 : 140).isActive = true
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: panel.contentView!.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
@@ -362,7 +380,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         guard columns.indices.contains(from) else { return false }
         let to = from < row ? row - 1 : row
         guard to != from, columns.indices.contains(to) else { return false }
-        panel.makeFirstResponder(nil)   // the text typed so far counts
+        view.window?.makeFirstResponder(nil)   // the text typed so far counts
         columns.insert(columns.remove(at: from), at: to)
         table.reloadData()
         table.selectRowIndexes([to], byExtendingSelection: false)
@@ -453,7 +471,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         let row = indexTable.row(for: sender)
         guard indexes.indices.contains(row) else { return }
         indexTable.selectRowIndexes([row], byExtendingSelection: false)
-        panel.makeFirstResponder(nil)   // the text typed so far counts
+        view.window?.makeFirstResponder(nil)   // the text typed so far counts
         let menu = NSMenu()
         let used = indexes[row].columns.map(IndexDraft.column(of:))
         for column in columns where !column.name.isEmpty {
@@ -531,6 +549,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
         if let problem = TableDesign.problem(name: name, columns: columns, indexes: indexes) {
             show(sql: "", message: problem, error: true)
+            hasChanges = true
+            if panel == nil { cancelButton.isEnabled = true }
             return
         }
         guard let snapshot else {
@@ -542,6 +562,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         show(sql: unchanged ? "" : change.sql,
              message: unchanged ? tr("沒有變更。", "Nothing has changed.") : change.warnings.joined(separator: "\n"),
              error: false, canSave: !unchanged)
+        hasChanges = !unchanged
+        if panel == nil { cancelButton.isEnabled = !unchanged }
     }
 
     private func show(sql: String, message text: String, error: Bool, canSave: Bool? = nil) {
@@ -557,11 +579,12 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     }
 
     @objc private func save(_ sender: Any?) {
-        panel.makeFirstResponder(nil)   // finish the cell being typed in
+        view.window?.makeFirstResponder(nil)   // finish the cell being typed in
         update()
-        guard sql != nil, saveButton.isEnabled else { return NSSound.beep() }
+        guard let sql, saveButton.isEnabled else { return NSSound.beep() }
+        if let onSave { return onSave(sql, tableName) }
         NSApp.stopModal(withCode: .OK)
-        panel.orderOut(nil)
+        panel?.orderOut(nil)
     }
 
     /// The title bar's close button: the same as Cancel.
@@ -571,8 +594,21 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     }
 
     @objc private func cancel(_ sender: Any?) {
+        guard let panel else { return revert() }
         sql = nil
         NSApp.stopModal(withCode: .cancel)
         panel.orderOut(nil)
+    }
+
+    /// In the Edit tab: back to the table as it is, dropping the changes.
+    private func revert() {
+        guard let snapshot else { return }
+        view.window?.makeFirstResponder(nil)
+        nameField.stringValue = snapshot.name
+        columns = snapshot.columns
+        indexes = snapshot.indexDrafts
+        table.reloadData()
+        indexTable.reloadData()
+        update()
     }
 }

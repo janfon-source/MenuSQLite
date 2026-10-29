@@ -21,7 +21,7 @@ enum MainMenu {
             .keyEquivalentModifierMask = [.command, .option]
         add(file, tr("新增視圖…", "New View…"), #selector(MainViewController.newView(_:)), "N", target: controller)
             .keyEquivalentModifierMask = [.command, .option, .shift]
-        add(file, tr("編輯資料表或視圖…", "Edit Table or View…"), #selector(MainViewController.editTable(_:)), "e", target: controller)
+        add(file, tr("編輯資料表或視圖", "Edit Table or View"), #selector(MainViewController.editTable(_:)), "e", target: controller)
             .keyEquivalentModifierMask = [.command, .option]
         add(file, tr("資料庫資訊…", "Database Info…"), #selector(MainViewController.showDatabaseInfo(_:)), "i", target: controller)
         add(file, tr("匯入 CSV…", "Import CSV…"), #selector(MainViewController.importCSV(_:)), "I", target: controller)
@@ -43,9 +43,10 @@ enum MainMenu {
         find.tag = Int(NSTextFinder.Action.showFindInterface.rawValue)
 
         let view = submenu(in: main, tr("顯示方式", "View"))
-        add(view, tr("資料", "Data"), #selector(MainViewController.showDataTab(_:)), "1", target: controller)
-        add(view, tr("結構", "Structure"), #selector(MainViewController.showStructureTab(_:)), "2", target: controller)
-        add(view, "SQL", #selector(MainViewController.showQueryTab(_:)), "3", target: controller)
+        add(view, tr("編輯", "Edit"), #selector(MainViewController.showEditTab(_:)), "1", target: controller)
+        add(view, tr("資料", "Data"), #selector(MainViewController.showDataTab(_:)), "2", target: controller)
+        add(view, tr("結構", "Structure"), #selector(MainViewController.showStructureTab(_:)), "3", target: controller)
+        add(view, "SQL", #selector(MainViewController.showQueryTab(_:)), "4", target: controller)
         view.addItem(.separator())
         add(view, tr("下一個標籤頁", "Next Tab"), #selector(MainViewController.nextTab(_:)), "\t", target: controller)
             .keyEquivalentModifierMask = [.control]
