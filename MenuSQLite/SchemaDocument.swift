@@ -56,7 +56,7 @@ enum SchemaDocument {
         return (out + ["", "**" + tr("欄位", "Columns") + "**", ""] + body).joined(separator: "\n") + "\n"
     }
 
-    /// A table's facts as label and value, for the Structure tab and the table's document.
+    /// A table's facts as label and value, for the table's document.
     static func factRows(_ facts: TableFacts, rows: Int) -> [[String]] {
         var out: [[String]] = []
         func add(_ zh: String, _ en: String, _ value: String?) {

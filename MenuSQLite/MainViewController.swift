@@ -17,11 +17,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     var database: DatabaseConnection? { active.map { sessions[$0].database } }
     private var objects: [DatabaseObject] = []
     private var selected: DatabaseObject? { sidebar.selectedRow >= 0 ? objects[sidebar.selectedRow] : nil }
-    /// The table the Data and Structure tabs were last loaded for. Reloading the table list
+    /// The table the Edit and Data tabs were last loaded for. Reloading the table list
     /// reselects the same row, which mustn't count as choosing it again and lose its filter.
     private var shown: DatabaseObject?
 
-    private enum Tab: Int { case edit, data, structure, query }
+    private enum Tab: Int { case edit, data, query }
     private var tab = Tab.data {
         didSet { showTab() }
     }
@@ -60,13 +60,12 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var dataPane: NSStackView!
     private var filterButton: NSButton!
     private var columnsButton: NSButton!
-    /// The Structure and Edit tabs' menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT, empty.
+    /// The Edit tab's menu of things to do to the table: compact, analyze, export, print, AUTOINCREMENT, empty.
     private var tableMenuButton: NSButton!
     /// Columns left out of the Data tab, by table, for as long as the app runs. Every column
     /// shows until some are unticked.
     private var hiddenColumns: [String: Set<String>] = [:]
     private let queryGrid = Grid()
-    private let structureView = NSTextView.scrollableTextView()
     /// The Edit tab: the table's or view's editor, scrolling when the window is too short for it.
     private let designView = NSScrollView()
     private let designHolder = FlippedView()
@@ -75,7 +74,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private var designEditor: AnyObject?
     private let editorView = NSTextView.scrollableTextView()
     private var editor: NSTextView { editorView.documentView as! NSTextView }
-    private var structureText: NSTextView { structureView.documentView as! NSTextView }
     private let querySplit = NSSplitView()
     private var querySplitPlaced = false
     private let statusLabel = NSTextField(labelWithString: "")
@@ -271,7 +269,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     private func makeDetail() -> NSView {
         tabs.segmentStyle = .rounded
-        tabs.segmentCount = 4
+        tabs.segmentCount = 3
         tabs.trackingMode = .selectOne
         tabs.selectedSegment = Tab.data.rawValue
         tabs.target = self
@@ -322,10 +320,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         designMessage.alignment = .center
         designMessage.textColor = .secondaryLabelColor
 
-        // Structure: columns, indexes and the CREATE statement.
-        structureText.isEditable = false
-        structureText.textContainerInset = NSSize(width: 10, height: 10)
-
         // Query: an SQL editor over its results.
         let sqlText = editor
         sqlText.delegate = self
@@ -363,7 +357,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
         emptyLabel.alignment = .center
         emptyLabel.textColor = .secondaryLabelColor
-        for view in [designView, dataPane!, structureView, querySplit, emptyLabel] {
+        for view in [designView, dataPane!, querySplit, emptyLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
             let inset: CGFloat = view === emptyLabel ? 24 : 0
@@ -475,13 +469,12 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         tabs.setLabel(tr("編輯", "Edit"), forSegment: Tab.edit.rawValue)
         tabs.setLabel(tr("資料", "Data"), forSegment: Tab.data.rawValue)
-        tabs.setLabel(tr("結構", "Structure"), forSegment: Tab.structure.rawValue)
         tabs.setLabel("SQL", forSegment: Tab.query.rawValue)
         updateTitle()
         updateFooter()
         filterBar.applyLanguage()
         // The structure text carries its headings in the language it was built in.
-        loadStructure()
+        loadDesign()
         showTab()
     }
 
@@ -638,7 +631,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         updateColumnsButton()
         updateTableButtons()
         loadPage()
-        loadStructure()
+        loadDesign()
         editor.string = session.sql
         matchingSQL = session.matchingSQL
         ranMatchingSQL = session.ranMatchingSQL
@@ -1031,7 +1024,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         updateColumnsButton()
         loadPage()
         matchQueryToData()   // after the page, whose columns the SELECT may list
-        loadStructure()
+        loadDesign()
         showTab()
     }
 
@@ -1092,7 +1085,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// Deletes every row of the table right-clicked in the list, keeping the table itself.
     @objc func emptyTable(_ sender: Any?) { empty(actedOn) }
 
-    /// The Structure and Edit tabs' menu acts on the table showing.
+    /// The Edit tab's menu acts on the table showing.
     @objc func emptySelectedTable(_ sender: Any?) { empty(selected) }
 
     private func empty(_ object: DatabaseObject?) {
@@ -1112,11 +1105,10 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         guard selected?.name == object.name else { return }
         loadPage()
-        if tab == .structure { refreshStructure() }
     }
 
     /// Runs the editor's SQL, then shows the table as it is now at once: the Data tab's columns
-    /// in their new order, the filter's columns, the Structure and Edit tabs and the SQL tab's
+    /// in their new order, the filter's columns, the Edit tab and the SQL tab's
     /// SELECT. From the Edit tab, a statement refused leaves the editor as it was, to fix.
     private func changeSchema(_ sql: String, thenSelect name: String, keepingEditsOnFailure: Bool = false) {
         guard let database else { return }
@@ -1132,8 +1124,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             sidebar.scrollRowToVisible(row)
         }
         refresh(nil)
-        // Read now rather than when the tab is next shown (refresh read it if it's showing).
-        if structureStale { refreshStructure() }
         matchQueryToData()
     }
 
@@ -1426,117 +1416,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         ])
     }
 
-    // MARK: - Structure tab
-
-    /// Whether the Structure tab shows an older table, or older facts, than it should. It's read
-    /// again when it next shows, so choosing tables on the Data tab doesn't wait for it.
-    private var structureStale = true
-
-    /// `keepingDesign` after the table menu's actions, which leave the design (and the Edit tab's
-    /// changes) as they were.
-    private func loadStructure(keepingDesign: Bool = false) {
-        structureStale = true
-        if isViewLoaded, tab == .structure { refreshStructure() }
-        guard !keepingDesign else { return }
+    /// Marks the Edit tab's editor out of date, after the table or its design may have changed;
+    /// made again at once if it's showing.
+    private func loadDesign() {
         designStale = true
         if isViewLoaded, tab == .edit { refreshDesign() }
-    }
-
-    /// What the Structure tab shows of a table or view.
-    private struct StructureInfo {
-        var facts: TableFacts?
-        var rows = 0
-        var columns: [Column] = []
-        var indexes: [Index]?
-        var create: String?
-    }
-
-    /// Reads the structure off the main thread, and shows it.
-    private func refreshStructure() {
-        structureStale = false
-        guard database != nil, let object = selected else {
-            structureText.textStorage?.setAttributedString(NSAttributedString())
-            return
-        }
-        perform(tr("正在讀取結構…", "Loading the structure…"), cancellable: true) { database in
-            var info = StructureInfo()
-            if object.kind == .table {
-                info.facts = try database.facts(of: object.name)
-                if info.facts != nil { info.rows = try database.rowCount(of: object.name) }
-                info.indexes = try database.indexes(of: object.name)
-            }
-            info.columns = try database.columns(of: object.name)
-            info.create = try database.createStatement(of: object.name)
-            return info
-        } then: { [weak self] result in
-            guard let self, self.selected == object else { return }
-            self.showStructure(result)
-        }
-    }
-
-    private func showStructure(_ result: Result<StructureInfo, Error>) {
-        let text = NSMutableAttributedString()
-        let body: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                                                   .foregroundColor: NSColor.labelColor]
-        func heading(_ title: String) {
-            if text.length > 0 { text.append(NSAttributedString(string: "\n", attributes: body)) }
-            text.append(NSAttributedString(string: title + "\n", attributes: [
-                .font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]))
-        }
-        func line(_ s: String, color: NSColor = .labelColor) {
-            var attrs = body
-            attrs[.foregroundColor] = color
-            text.append(NSAttributedString(string: s + "\n", attributes: attrs))
-        }
-        let font = body[.font] as! NSFont
-        switch result {
-        case .failure(let error):
-            line(DatabaseError.wasCancelled(error) ? tr("已取消讀取", "Loading cancelled") : error.localizedDescription, color: .systemRed)
-        case .success(let info):
-            if let facts = info.facts {
-                heading(tr("資料表資訊", "Table Info"))
-                let rows = SchemaDocument.factRows(facts, rows: info.rows)
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.tabStops = [NSTextTab(textAlignment: .left, location: (rows.map {
-                    ($0[0] as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) + 16)]
-                for row in rows {
-                    let entry = NSMutableAttributedString(string: row[0] + "\t", attributes: [
-                        .font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.secondaryLabelColor])
-                    entry.append(NSAttributedString(string: row[1] + "\n", attributes: [
-                        .font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor]))
-                    text.append(entry)
-                }
-            }
-            heading(tr("欄位", "Columns"))
-            let rows = [[tr("名稱", "Name"), tr("類型", "Type"), tr("非空", "Not Null"), tr("預設值", "Default"), tr("主鍵", "Key")]]
-                + info.columns.map { [$0.name, $0.type, $0.notNull ? "✓" : "", $0.defaultValue ?? "", $0.primaryKey > 0 ? "\($0.primaryKey)" : ""] }
-            // Tab stops at each column's widest text keep the columns lined up, Chinese included.
-            var stop: CGFloat = 0
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.tabStops = (0..<4).map { i in
-                stop += (rows.map { ($0[i] as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) + 16
-                return NSTextTab(textAlignment: .left, location: stop)
-            }
-            for (n, row) in rows.enumerated() {
-                text.append(NSAttributedString(string: row.joined(separator: "\t") + "\n", attributes: [
-                    .font: font, .paragraphStyle: paragraph,
-                    .foregroundColor: n == 0 ? NSColor.secondaryLabelColor : NSColor.labelColor]))
-            }
-            if let indexes = info.indexes {
-                heading(tr("索引", "Indexes"))
-                if indexes.isEmpty { line(tr("（沒有）", "(none)"), color: .secondaryLabelColor) }
-                for index in indexes {
-                    line("\(index.name)\(index.unique ? " UNIQUE" : "")  (\(index.columns.joined(separator: ", ")))")
-                }
-            }
-            if let sql = info.create {
-                heading(tr("建立語句", "CREATE Statement"))
-                let statement = NSMutableAttributedString(string: sql + "\n", attributes: body)
-                SyntaxHighlighter.highlight(statement, language: "sql")
-                text.append(statement)
-            }
-        }
-        structureText.textStorage?.setAttributedString(text)
     }
 
     // MARK: - Working off the main thread
@@ -1601,7 +1485,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     @objc func showTableMenu(_ sender: Any?) {
         guard let database, let object = selected else { return NSSound.beep() }
-        if tab != .structure, tab != .edit { tab = .structure }
+        if tab != .edit { tab = .edit }
         let menu = NSMenu()
         menu.autoenablesItems = false
         func item(_ zh: String, _ en: String, _ action: Selector, enabled: Bool = true) {
@@ -1615,6 +1499,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             item("分析資料表（ANALYZE）", "Analyze Table (ANALYZE)", #selector(analyzeTable(_:)), enabled: writable)
             menu.addItem(.separator())
         }
+        item("顯示建立語句（SQL）…", "Show CREATE Statement (SQL)…", #selector(showCreateStatement(_:)))
+        item("複製建立語句（SQL）", "Copy CREATE Statement (SQL)", #selector(copyCreateStatement(_:)))
+        menu.addItem(.separator())
         item("匯出 Markdown…", "Export Markdown…", #selector(exportTableMarkdown(_:)))
         item("列印…", "Print…", #selector(printTable(_:)))
         if object.kind == .table {
@@ -1648,7 +1535,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             guard let self else { return }
             switch result {
             case .success(let (before, after)):
-                self.loadStructure(keepingDesign: true)
                 var text = tr("VACUUM 重建了整個資料庫檔案，把刪除資料後留下的空間還給系統。",
                               "VACUUM rebuilt the whole database file, giving back the space deleted rows left.")
                 if let before, let after {
@@ -1671,7 +1557,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             guard let self else { return }
             switch result {
             case .success:
-                self.loadStructure(keepingDesign: true)
                 self.inform(tr("已分析資料表", "Table analyzed"),
                             tr("索引的統計資料已更新（存在 sqlite_stat1），查詢計畫會更準確。",
                                "The index statistics are up to date (in sqlite_stat1), for better query plans."))
@@ -1716,6 +1601,65 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     /// Prints the table's document, laid out as the structure document prints.
+    /// The table's or view's CREATE statement, then those of its indexes and triggers, as the
+    /// database keeps them; nil, with the error shown, if they can't be read.
+    private func createStatementOfSelected() -> String? {
+        guard let database, let object = selected else { return nil }
+        do {
+            let rows = try database.run("""
+                SELECT sql FROM sqlite_master WHERE tbl_name = ? AND sql IS NOT NULL
+                ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name
+                """, [.text(object.name)]).rows
+            let statements = rows.compactMap { row -> String? in
+                guard case .text(let sql)? = row.first else { return nil }
+                return sql + ";"
+            }
+            if !statements.isEmpty { return statements.joined(separator: "\n\n") }
+            NSSound.beep()
+        } catch {
+            showError(tr("無法讀取建立語句", "Couldn’t read the CREATE statement"), error)
+        }
+        return nil
+    }
+
+    /// Shows the CREATE statement, syntax-colored and selectable, with a button to copy it.
+    @objc func showCreateStatement(_ sender: Any?) {
+        guard let object = selected, let sql = createStatementOfSelected() else { return }
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 560, height: 320)
+        scroll.borderType = .bezelBorder
+        scroll.hasHorizontalScroller = true
+        let text = scroll.documentView as! NSTextView
+        text.isEditable = false
+        text.textContainerInset = NSSize(width: 6, height: 6)
+        // Long lines scroll sideways rather than wrap, as the statement is laid out.
+        text.isHorizontallyResizable = true
+        text.textContainer?.widthTracksTextView = false
+        text.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        let attributed = NSMutableAttributedString(string: sql, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor])
+        SyntaxHighlighter.highlight(attributed, language: "sql")
+        text.textStorage?.setAttributedString(attributed)
+        let alert = NSAlert()
+        alert.messageText = object.kind == .view ? tr("視圖「\(object.name)」的建立語句", "CREATE Statement of the View “\(object.name)”")
+                                                 : tr("資料表「\(object.name)」的建立語句", "CREATE Statement of the Table “\(object.name)”")
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: tr("關閉", "Close"))
+        alert.addButton(withTitle: tr("複製", "Copy"))
+        if keepingPopoverOpen({ alert.runModal() }) == .alertSecondButtonReturn { copyToPasteboard(sql) }
+    }
+
+    @objc func copyCreateStatement(_ sender: Any?) {
+        guard let sql = createStatementOfSelected() else { return }
+        copyToPasteboard(sql)
+    }
+
+    private func copyToPasteboard(_ sql: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sql, forType: .string)
+        showNotice(tr("已複製建立語句", "CREATE statement copied"))
+    }
+
     @objc func printTable(_ sender: Any?) {
         tableDocument(tr("無法列印", "Couldn’t print")) { [weak self] markdown, object, database in
             self?.printTableDocument(markdown, of: object, in: database)
@@ -1743,7 +1687,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             alert.addButton(withTitle: tr("取消", "Cancel"))
             guard keepingPopoverOpen({ alert.runModal() }) == .alertFirstButtonReturn else { return }
             let now = try database.setAutoIncrement(of: object.name, to: next)
-            loadStructure(keepingDesign: true)
             inform(tr("已重設自動遞增值", "AUTOINCREMENT reset"),
                    tr("下一個自動遞增值：\(now.map(String.init) ?? "—")", "Next AUTOINCREMENT: \(now.map(String.init) ?? "—")"))
         } catch {
@@ -1773,7 +1716,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                     continue
                 }
                 let now = try database.setAutoIncrement(of: object.name, to: value)
-                loadStructure(keepingDesign: true)
                 inform(tr("已設定自動遞增值", "AUTOINCREMENT set"),
                        tr("下一個自動遞增值：\(now.map(String.init) ?? "—")", "Next AUTOINCREMENT: \(now.map(String.init) ?? "—")"))
                 return
@@ -1843,7 +1785,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             if Self.mayChange(sql) {
                 self.reloadObjects()
                 self.loadPage()
-                self.loadStructure()
+                self.loadDesign()
             }
         }
     }
@@ -1886,7 +1828,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     @objc func showEditTab(_ sender: Any?) { tab = .edit }
     @objc func showDataTab(_ sender: Any?) { tab = .data }
-    @objc func showStructureTab(_ sender: Any?) { tab = .structure }
     @objc func showQueryTab(_ sender: Any?) { tab = .query }
 
     private func showTab() {
@@ -1898,11 +1839,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         dataPane.isHidden = tab != .data || !hasTable
         filterButton.isHidden = dataPane.isHidden
         columnsButton.isHidden = dataPane.isHidden
-        structureView.isHidden = tab != .structure || !hasTable
-        tableMenuButton.isHidden = structureView.isHidden && designView.isHidden
-        if !structureView.isHidden, structureStale { refreshStructure() }
+        tableMenuButton.isHidden = designView.isHidden
         querySplit.isHidden = tab != .query || database == nil
-        emptyLabel.isHidden = !(designView.isHidden && dataPane.isHidden && structureView.isHidden && querySplit.isHidden)
+        emptyLabel.isHidden = !(designView.isHidden && dataPane.isHidden && querySplit.isHidden)
         emptyLabel.stringValue = database == nil
             ? tr("按工具列的資料夾按鈕開啟 SQLite 資料庫（⌘O），或按 ⌘N 新增一個。",
                  "Open an SQLite database with the folder button (⌘O), or make a new one with ⌘N.")
@@ -1974,7 +1913,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
                 + (dataGrid.editable || selected?.kind == .view ? "" : tr("（唯讀）", " (read-only)"))
             statusLabel.textColor = .secondaryLabelColor
         } else {
-            statusLabel.stringValue = ""
+            statusLabel.stringValue = notice ?? ""   // a word on what just happened, on any tab
+            statusLabel.textColor = .secondaryLabelColor
         }
     }
 
@@ -1987,7 +1927,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         filterBar.update(columns: selectedColumns)
         updateFilterButton()
         loadPage()
-        loadStructure()
+        loadDesign()
     }
 
     /// Shows where the database is and how big, and lets it be compacted.
@@ -2479,7 +2419,7 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(refresh(_:)), #selector(exportCSV(_:)), #selector(showDatabaseInfo(_:)), #selector(showSchemaDocument(_:)), #selector(runQuery(_:)), #selector(showQueryTab(_:)),
              #selector(addToFavorites(_:)):
             return database != nil
-        case #selector(showEditTab(_:)), #selector(editTable(_:)), #selector(showDataTab(_:)), #selector(showStructureTab(_:)), #selector(toggleFilter(_:)), #selector(showColumnsMenu(_:)):
+        case #selector(showEditTab(_:)), #selector(editTable(_:)), #selector(showDataTab(_:)), #selector(toggleFilter(_:)), #selector(showColumnsMenu(_:)):
             return selected != nil
         case #selector(nextTab(_:)), #selector(previousTab(_:)):
             return sessions.count > 1

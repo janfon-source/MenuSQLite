@@ -45,8 +45,7 @@ enum MainMenu {
         let view = submenu(in: main, tr("顯示方式", "View"))
         add(view, tr("編輯", "Edit"), #selector(MainViewController.showEditTab(_:)), "1", target: controller)
         add(view, tr("資料", "Data"), #selector(MainViewController.showDataTab(_:)), "2", target: controller)
-        add(view, tr("結構", "Structure"), #selector(MainViewController.showStructureTab(_:)), "3", target: controller)
-        add(view, "SQL", #selector(MainViewController.showQueryTab(_:)), "4", target: controller)
+        add(view, "SQL", #selector(MainViewController.showQueryTab(_:)), "3", target: controller)
         view.addItem(.separator())
         add(view, tr("下一個標籤頁", "Next Tab"), #selector(MainViewController.nextTab(_:)), "\t", target: controller)
             .keyEquivalentModifierMask = [.control]
