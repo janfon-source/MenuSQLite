@@ -63,7 +63,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     /// In the toolbar: hides the tables and views on the left, or shows them again.
     private lazy var sidebarButton: NSButton = toolButton("sidebar.left", "隱藏或顯示資料表和視圖清單（⌃⌘S）",
                                                           "Hide or Show the Tables and Views (⌃⌘S)", #selector(toggleSidebar(_:)))
-    /// After the tabs, while the Edit tab shows a table's editor: its column buttons.
+    /// At the right of the tab bar, while the Edit tab shows a table's editor: its column buttons.
     private let designTools = NSStackView()
     private var sidebarWidth: CGFloat = 190
     private var columnsButton: NSButton!
@@ -404,8 +404,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         tableMenuButton = toolButton("gearshape", "資料表功能：壓縮、分析、匯出、列印、自動遞增值、清空",
                                      "Table Actions: compact, analyze, export, print, AUTOINCREMENT, empty", #selector(showTableMenu(_:)))
         designTools.spacing = 4
-        let tabBar = NSStackView(views: [tabs, designTools, tabSpacer, columnsButton, filterButton, tableMenuButton])
-        tabBar.setCustomSpacing(12, after: tabs)
+        let tabBar = NSStackView(views: [tabs, tabSpacer, designTools, columnsButton, filterButton, tableMenuButton])
+        tabBar.setCustomSpacing(12, after: designTools)
         tabBar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         tabBar.setHuggingPriority(.required, for: .vertical)   // its own height; the content takes the rest
         let detail = NSStackView(views: [tabBar, content])
