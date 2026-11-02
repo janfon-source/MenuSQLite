@@ -30,9 +30,6 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private var upButton: NSButton!
     private var downButton: NSButton!
     private var fieldsButton: NSButton!
-    /// In the Edit tab, the column buttons (add, remove, move, fields to show) go in the tab bar
-    /// beside the tabs, rather than under the grid.
-    private(set) var tools: NSView?
 
     /// The grid's columns left out (its fields: type, length, key…), kept between editors. The
     /// widths are kept by the grid itself.
@@ -124,7 +121,11 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         nameField.stringValue = snapshot?.name ?? ""
         nameField.placeholderString = tr("資料表名稱", "Table name")
         nameField.delegate = self
-        let nameRow = NSStackView(views: [NSTextField(labelWithString: tr("名稱", "Name")), nameField])
+        // A table's name is short: the field leaves the rest of the row to the column buttons in the Edit tab.
+        nameField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        let nameSpacer = NSView()
+        nameSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let nameRow = NSStackView(views: [NSTextField(labelWithString: tr("名稱", "Name")), nameField, nameSpacer])
 
         for field in Field.allCases {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(field.rawValue))
@@ -185,7 +186,9 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         let columnButtons = NSStackView(views: panel == nil ? [addButton, removeButton, upButton, downButton, fieldsButton]
                                                             : [addButton, removeButton, upButton, downButton, NSView(), fieldsButton])
         columnButtons.spacing = 2
-        if panel == nil { tools = columnButtons }
+        // In the Edit tab, the column buttons (add, remove, move, fields to show) go at the right of the
+        // name's row rather than under the grid.
+        if panel == nil { nameRow.addArrangedSubview(columnButtons) }
 
         // The indexes made with CREATE INDEX; the key and UNIQUE ones are the checkboxes above.
         for field in IndexField.allCases {
