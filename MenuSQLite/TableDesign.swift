@@ -39,6 +39,20 @@ struct IndexDraft: Equatable {
         return name + text.dropFirst(text.prefix { $0 != "(" && $0 != " " }.count)
     }
 
+    /// A part taken apart for the editor's fields: `title COLLATE NOCASE DESC` is ("title", "NOCASE", true).
+    static func pieces(of part: String) -> (column: String, collation: String, descending: Bool) {
+        let text = part.trimmingCharacters(in: .whitespaces)
+        let words = text.dropFirst(text.prefix { $0 != "(" && $0 != " " }.count).split(separator: " ").map(String.init)
+        var collation = ""
+        if let at = words.firstIndex(where: { $0.uppercased() == "COLLATE" }), at + 1 < words.count { collation = words[at + 1] }
+        return (column(of: text), collation, words.last?.uppercased() == "DESC")
+    }
+
+    /// A part put together from the editor's fields.
+    static func part(column: String, collation: String, descending: Bool) -> String {
+        column + (collation.isEmpty ? "" : " COLLATE \(collation)") + (descending ? " DESC" : "")
+    }
+
     /// The columns as text, for the editor's field: name, created DESC
     var columnsText: String { columns.joined(separator: ", ") }
 
