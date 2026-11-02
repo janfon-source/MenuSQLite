@@ -249,9 +249,15 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         sqlButton.image = NSImage(systemSymbolName: "chevron.left.forwardslash.chevron.right", accessibilityDescription: nil)
         sqlButton.imagePosition = .imageLeading
         sqlButton.toolTip = tr("顯示儲存時將執行的 SQL", "Show the SQL that Save will run")
-        let actions = NSStackView(views: [NSView(), sqlButton, cancelButton, saveButton])
+        // The message (nothing changed, a warning, what's wrong) at the left of the buttons' row.
+        message.maximumNumberOfLines = 2
+        message.lineBreakMode = .byTruncatingTail
+        message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let actionsSpacer = NSView()
+        actionsSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let actions = NSStackView(views: [message, actionsSpacer, sqlButton, cancelButton, saveButton])
 
-        let stack = NSStackView(views: [nameRow, tableScroll] + (inTab ? [] : [columnButtons]) + [indexHeader, indexScroll, message, actions])
+        let stack = NSStackView(views: [nameRow, tableScroll] + (inTab ? [] : [columnButtons]) + [indexHeader, indexScroll, actions])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -261,7 +267,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         stack.setCustomSpacing(14, after: inTab ? tableScroll : columnButtons)
-        for view in [nameRow, tableScroll] + (inTab ? [] : [columnButtons]) + [indexHeader, indexScroll, message, actions] {
+        for view in [nameRow, tableScroll] + (inTab ? [] : [columnButtons]) + [indexHeader, indexScroll, actions] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset).isActive = true
         }
         tableScroll.setContentHuggingPriority(.init(1), for: .vertical)
@@ -720,6 +726,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         message.stringValue = text
         message.textColor = error ? .systemRed : .systemOrange
         message.isHidden = text.isEmpty
+        message.toolTip = text.isEmpty ? nil : text   // in full, when it's cut short
         saveButton.isEnabled = canSave ?? !error
         sqlButton.isEnabled = !sql.isEmpty
         self.sql = sql.isEmpty ? nil : sql
