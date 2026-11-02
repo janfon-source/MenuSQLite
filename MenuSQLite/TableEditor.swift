@@ -30,6 +30,9 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private var upButton: NSButton!
     private var downButton: NSButton!
     private var fieldsButton: NSButton!
+    /// In the Edit tab, the column buttons (add, remove, move, fields to show) go in the tab bar
+    /// beside the tabs, rather than under the grid.
+    private(set) var tools: NSView?
 
     /// The grid's columns left out (its fields: type, length, key…), kept between editors. The
     /// widths are kept by the grid itself.
@@ -172,9 +175,11 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         upButton = button("arrow.up", "上移", "Move Up", #selector(moveUp(_:)))
         downButton = button("arrow.down", "下移", "Move Down", #selector(moveDown(_:)))
         fieldsButton = button("checklist", "選擇要顯示的欄位", "Choose the Fields to Show", #selector(showFieldsMenu(_:)))
-        let columnButtons = NSStackView(views: [button("plus", "新增欄位", "Add Column", #selector(addColumn(_:))),
-                                                removeButton, upButton, downButton, NSView(), fieldsButton])
+        let addButton = button("plus", "新增欄位", "Add Column", #selector(addColumn(_:)))
+        let columnButtons = NSStackView(views: panel == nil ? [addButton, removeButton, upButton, downButton, fieldsButton]
+                                                            : [addButton, removeButton, upButton, downButton, NSView(), fieldsButton])
         columnButtons.spacing = 4
+        if panel == nil { tools = columnButtons }
 
         // The indexes made with CREATE INDEX; the key and UNIQUE ones are the checkboxes above.
         for field in IndexField.allCases {
@@ -230,7 +235,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         sqlButton.toolTip = tr("顯示儲存時將執行的 SQL", "Show the SQL that Save will run")
         let actions = NSStackView(views: [sqlButton, NSView(), cancelButton, saveButton])
 
-        let stack = NSStackView(views: [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, actions])
+        let stack = NSStackView(views: [nameRow, tableScroll] + (inTab ? [] : [columnButtons]) + [indexHeader, indexScroll, indexButtons, message, actions])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -239,8 +244,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         stack.edgeInsets = NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
-        stack.setCustomSpacing(14, after: columnButtons)
-        for view in [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, actions] {
+        stack.setCustomSpacing(14, after: inTab ? tableScroll : columnButtons)
+        for view in [nameRow, tableScroll] + (inTab ? [] : [columnButtons]) + [indexHeader, indexScroll, indexButtons, message, actions] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset).isActive = true
         }
         tableScroll.setContentHuggingPriority(.init(1), for: .vertical)
@@ -394,8 +399,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
             menu.addItem(item)
         }
         menu.allowsContextMenuPlugIns = false
-        // Its right edge under the button's, so it opens into the editor rather than past it.
-        menu.popUp(positioning: nil, at: NSPoint(x: sender.bounds.width - width, y: sender.bounds.height + 4), in: sender)
+        // In the window, its right edge under the button's, so it opens into the editor rather than past it.
+        menu.popUp(positioning: nil, at: NSPoint(x: panel == nil ? 0 : sender.bounds.width - width, y: sender.bounds.height + 4), in: sender)
     }
 
     @objc private func toggleField(_ sender: NSButton) {

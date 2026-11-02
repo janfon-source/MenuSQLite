@@ -86,7 +86,7 @@ struct TableSnapshot {
 enum TableDesign {
     /// The types the editor offers: SQLite's own five. Other names (VARCHAR, DECIMAL…) can still
     /// be typed, with a length in the field beside.
-    static let types = ["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB"]
+    static let types = ["BLOB", "INTEGER", "NUMERIC", "REAL", "TEXT"]
 
     /// What a type's length starts as when it's chosen or typed.
     static let defaultLengths = ["VARCHAR": "255", "CHAR": "10", "DECIMAL": "10,2"]
