@@ -20,6 +20,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private let message = NSTextField(wrappingLabelWithString: "")
     private let preview = NSTextView.scrollableTextView()
     private var previewText: NSTextView { preview.documentView as! NSTextView }
+    /// Shows the SQL to run in a popover, beside Save.
+    private var sqlButton: NSButton!
     private var saveButton: NSButton!
     private var cancelButton: NSButton!
     /// In the Edit tab: whether the design differs from the table as it is.
@@ -212,9 +214,8 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         previewText.isEditable = false
         previewText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         previewText.textContainerInset = NSSize(width: 6, height: 6)
-        preview.borderType = .bezelBorder
         preview.hasVerticalScroller = true
-        preview.heightAnchor.constraint(equalToConstant: inTab ? 90 : 150).isActive = true
+        preview.frame = NSRect(x: 0, y: 0, width: 620, height: 260)
 
         saveButton = NSButton(title: snapshot == nil ? tr("建立", "Create") : tr("儲存", "Save"), target: self, action: #selector(save(_:)))
         cancelButton = NSButton(title: inTab ? tr("還原", "Revert") : tr("取消", "Cancel"), target: self, action: #selector(cancel(_:)))
@@ -223,10 +224,13 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
             saveButton.keyEquivalent = "\r"
             cancelButton.keyEquivalent = "\u{1b}"
         }
-        let actions = NSStackView(views: [NSView(), cancelButton, saveButton])
+        sqlButton = NSButton(title: tr("執行的 SQL", "SQL to Run"), target: self, action: #selector(showSQL(_:)))
+        sqlButton.image = NSImage(systemSymbolName: "chevron.left.forwardslash.chevron.right", accessibilityDescription: nil)
+        sqlButton.imagePosition = .imageLeading
+        sqlButton.toolTip = tr("顯示儲存時將執行的 SQL", "Show the SQL that Save will run")
+        let actions = NSStackView(views: [sqlButton, NSView(), cancelButton, saveButton])
 
-        let stack = NSStackView(views: [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message,
-                                        NSTextField(labelWithString: tr("將執行的 SQL", "SQL to Run")), preview, actions])
+        let stack = NSStackView(views: [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, actions])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -236,7 +240,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
         stack.setCustomSpacing(14, after: columnButtons)
-        for view in [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, preview, actions] {
+        for view in [nameRow, tableScroll, columnButtons, indexHeader, indexScroll, indexButtons, message, actions] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * inset).isActive = true
         }
         tableScroll.setContentHuggingPriority(.init(1), for: .vertical)
@@ -644,7 +648,22 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         message.textColor = error ? .systemRed : .systemOrange
         message.isHidden = text.isEmpty
         saveButton.isEnabled = canSave ?? !error
+        sqlButton.isEnabled = !sql.isEmpty
         self.sql = sql.isEmpty ? nil : sql
+    }
+
+    /// The SQL Save will run, in a popover over the button, to read or copy.
+    @objc private func showSQL(_ sender: NSButton) {
+        view.window?.makeFirstResponder(nil)   // finish the cell being typed in
+        update()
+        guard sql != nil else { return NSSound.beep() }
+        let controller = NSViewController()
+        controller.view = preview
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = controller
+        popover.contentSize = preview.frame.size
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
 
     @objc private func save(_ sender: Any?) {

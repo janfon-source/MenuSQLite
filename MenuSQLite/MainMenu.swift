@@ -46,6 +46,8 @@ enum MainMenu {
         add(view, tr("編輯", "Edit"), #selector(MainViewController.showEditTab(_:)), "1", target: controller)
         add(view, tr("資料", "Data"), #selector(MainViewController.showDataTab(_:)), "2", target: controller)
         add(view, "SQL", #selector(MainViewController.showQueryTab(_:)), "3", target: controller)
+        add(view, tr("隱藏或顯示資料表清單", "Hide or Show the Table List"), #selector(MainViewController.toggleSidebar(_:)), "s", target: controller)
+            .keyEquivalentModifierMask = [.command, .control]
         view.addItem(.separator())
         add(view, tr("下一個標籤頁", "Next Tab"), #selector(MainViewController.nextTab(_:)), "\t", target: controller)
             .keyEquivalentModifierMask = [.control]
