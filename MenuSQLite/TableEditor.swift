@@ -164,11 +164,17 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         tableScroll.autohidesScrollers = true
         tableScroll.borderType = .bezelBorder
 
-        func button(_ symbol: String, _ zh: String, _ en: String, _ action: Selector) -> NSButton {
-            let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: tr(zh, en))!,
-                                  target: self, action: action)
-            button.bezelStyle = .smallSquare
+        // Plain icons like the window's toolbar: the column buttons as large as its own, those
+        // beside the index and foreign key headings smaller.
+        func button(_ symbol: String, _ zh: String, _ en: String, _ action: Selector, small: Bool = false) -> NSButton {
+            let image = NSImage(systemSymbolName: symbol, accessibilityDescription: tr(zh, en))!
+                .withSymbolConfiguration(.init(pointSize: small ? 12 : 15, weight: .regular))!
+            let button = NSButton(image: image, target: self, action: action)
+            button.isBordered = false
+            button.contentTintColor = .secondaryLabelColor
             button.toolTip = tr(zh, en)
+            button.widthAnchor.constraint(equalToConstant: small ? 24 : 30).isActive = true
+            button.heightAnchor.constraint(equalToConstant: small ? 22 : 26).isActive = true
             return button
         }
         removeButton = button("minus", "刪除欄位", "Remove Column", #selector(removeColumn(_:)))
@@ -178,7 +184,7 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         let addButton = button("plus", "新增欄位", "Add Column", #selector(addColumn(_:)))
         let columnButtons = NSStackView(views: panel == nil ? [addButton, removeButton, upButton, downButton, fieldsButton]
                                                             : [addButton, removeButton, upButton, downButton, NSView(), fieldsButton])
-        columnButtons.spacing = 4
+        columnButtons.spacing = 2
         if panel == nil { tools = columnButtons }
 
         // The indexes made with CREATE INDEX; the key and UNIQUE ones are the checkboxes above.
@@ -211,10 +217,10 @@ final class TableEditor: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         indexHint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let indexHeader = NSStackView(views: [indexTitle, indexHint])
         indexHeader.alignment = .centerY
-        removeIndexButton = button("minus", "刪除索引", "Remove Index", #selector(removeIndex(_:)))
+        removeIndexButton = button("minus", "刪除索引", "Remove Index", #selector(removeIndex(_:)), small: true)
         // Adding and removing at the right end of the heading.
-        let indexButtons = NSStackView(views: [button("plus", "新增索引", "Add Index", #selector(addIndex(_:))), removeIndexButton])
-        indexButtons.spacing = 4
+        let indexButtons = NSStackView(views: [button("plus", "新增索引", "Add Index", #selector(addIndex(_:)), small: true), removeIndexButton])
+        indexButtons.spacing = 0
         let indexSpacer = NSView()
         indexSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
         indexHeader.addArrangedSubview(indexSpacer)
