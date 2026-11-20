@@ -1235,8 +1235,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             }
         } catch {
             showError(tr("無法新增資料列", "Couldn’t add a row"), error,
-                      hint: tr("有不允許空值又沒有預設值的欄位時，請改用 SQL 的 INSERT 指定欄位值。",
-                               "When a column can't be NULL and has no default, use an SQL INSERT that gives its value."))
+                      hint: tr("沒有預設值的欄位會先填入 0、空字串或今天的日期；若這樣的值不被接受（例如重複的唯一鍵、外鍵或 CHECK 限制），請改用 SQL 的 INSERT 指定欄位值。",
+                               "Columns without a default are filled with 0, an empty string or today's date; when that isn't accepted (a duplicate unique key, a foreign key or a CHECK constraint), use an SQL INSERT that gives the values."))
         }
     }
 

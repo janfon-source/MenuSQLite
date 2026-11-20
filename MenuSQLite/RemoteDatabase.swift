@@ -154,9 +154,10 @@ final class RemoteDatabase: DatabaseConnection {
     }
 
     func insertRow(into table: String) throws -> Int64 {
+        let sql = try insertRowSQL(into: table)
         lock.lock()
         defer { lock.unlock() }
-        return try execute("INSERT INTO \(Database.quote(table)) DEFAULT VALUES", []).lastRowID
+        return try execute(sql, []).lastRowID
     }
 
     /// Stops the ssh running the statement. sqlite3 on the server goes with it (its input closes),

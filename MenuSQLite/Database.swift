@@ -165,6 +165,42 @@ extension DatabaseConnection {
         }
     }
 
+    /// The INSERT for a new row of defaults. A column that can't be NULL and has no default gets
+    /// a stand-in for its type (0, '', today), to be changed in the grid; a whole-number key that
+    /// isn't the rowid gets one more than the largest so far.
+    func insertRowSQL(into table: String) throws -> String {
+        let quoted = Database.quote(table)
+        let columns = try self.columns(of: table)
+        let keyCount = columns.filter { $0.primaryKey > 0 }.count
+        var names: [String] = [], values: [String] = []
+        for column in columns where column.notNull && column.defaultValue == nil {
+            // INTEGER PRIMARY KEY is the rowid, which SQLite numbers itself.
+            if column.primaryKey > 0, keyCount == 1, column.type.uppercased() == "INTEGER" { continue }
+            var value = Self.standIn(for: column.type)
+            if column.primaryKey > 0, value == "0" {
+                let largest = try run("SELECT MAX(\(Database.quote(column.name))) FROM \(quoted)").rows.first?.first
+                value = String((Int64(largest?.display ?? "") ?? 0) + 1)
+            }
+            names.append(Database.quote(column.name))
+            values.append(value)
+        }
+        guard !names.isEmpty else { return "INSERT INTO \(quoted) DEFAULT VALUES" }
+        return "INSERT INTO \(quoted) (\(names.joined(separator: ", "))) VALUES (\(values.joined(separator: ", ")))"
+    }
+
+    /// A value a column of this declared type takes, as SQL, following SQLite's affinity rules,
+    /// with dates and times in the local time.
+    static func standIn(for declaredType: String) -> String {
+        let type = declaredType.uppercased()
+        if type.contains("DATETIME") || type.contains("TIMESTAMP") { return "datetime('now', 'localtime')" }
+        if type.contains("DATE") { return "date('now', 'localtime')" }
+        if type.contains("TIME") { return "'00:00:00'" }
+        if type.contains("INT") { return "0" }
+        if type.contains("CHAR") || type.contains("CLOB") || type.contains("TEXT") { return "''" }
+        if type.isEmpty || type.contains("BLOB") { return "X''" }
+        return "0"   // REAL, NUMERIC, DECIMAL, BOOLEAN and the rest of numeric affinity
+    }
+
     func indexes(of name: String) throws -> [Index] {
         try run("PRAGMA index_list(\(Database.quote(name)))").rows.map { row in
             let indexName = row[1].display
@@ -444,9 +480,10 @@ final class Database: DatabaseConnection {
 
     /// Adds a row of default values; returns its rowid.
     func insertRow(into table: String) throws -> Int64 {
+        let sql = try insertRowSQL(into: table)
         lock.lock()
         defer { lock.unlock() }
-        try run("INSERT INTO \(Self.quote(table)) DEFAULT VALUES")
+        try run(sql)
         return sqlite3_last_insert_rowid(handle)
     }
 
